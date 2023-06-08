@@ -1,0 +1,15 @@
+name: CaCo
+channels:
+  - defaults
+  - bioconda
+dependencies:
+  - python=3.9
+  - numpy
+  - pandas
+  - matplotlib
+  - tqdm
+  - lzma
+  - json
+  - hmmer
+  - prodigal
+
