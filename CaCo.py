@@ -227,6 +227,7 @@ def main(mode=None, ofile=None, temp=None,
             print(f'\t{infile}...')
     else:
         if genomes:
+            genomes = [row.strip() for row in open(genomes, 'r')]
             for infile in genomes:
                 infile = dbcansearch(infile, temp, db)
                 process_hmmsearch_output(infile, temp)
