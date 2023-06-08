@@ -199,47 +199,33 @@ def predict_genes(infile, outdir):
          '-q'])
          
          
-def main(mode=None, ofile=None, temp=None,
-         genomes=None, g1=None, g2=None,
-         db=None, subs=None):
-    
+def main(mode=None, ofile=None, temp=None, genomes=None, g1=None, g2=None, db=None, subs=None):
     subs = json.load(open(subs))
     os.makedirs(temp, exist_ok=True)
-    
-    if mode == 'from_nucleotides':
-        print('Gene prediction')
-        if genomes:
+    if genomes:
             genomes = [row.strip() for row in open(genomes, 'r')]
-            for g in genomes:
-                predict_genes(g, temp)
-                print(f'\t{g}...')
-        else:
-            for g in [g1, g2]:
-                predict_genes(g, temp)
-                print(f'\t{g}...')
-
-    print('Annotation using DBCan')
-    if mode == 'from_nucleotides':               
-        for infile in glob(f'{temp}/*.faa'):
+            
+    def process_input_files(inputs):
+        for infile in inputs:
             infile = dbcansearch(infile, temp, db)
             process_hmmsearch_output(infile, temp)
             run(['rm', '-rf', infile])
             print(f'\t{infile}...')
+    
+    if mode == 'from_nucleotides':
+        print('Gene prediction')
+        inputs = genomes or [g1, g2]
+        for g in inputs:
+            predict_genes(g, temp)
+            print(f'\t{g}...')
+
+        print('Annotation using DBCan')
+        process_input_files(glob(f'{temp}/*.faa'))
     else:
-        if genomes:
-            genomes = [row.strip() for row in open(genomes, 'r')]
-            for infile in genomes:
-                infile = dbcansearch(infile, temp, db)
-                process_hmmsearch_output(infile, temp)
-                run(['rm', '-rf', infile])
-                print(f'\t{infile}...')
-        else:
-            for infile in [g1, g2]:
-                infile = dbcansearch(infile, temp, db)
-                process_hmmsearch_output(infile, temp)
-                run(['rm', '-rf', infile])
-                print(f'\t{infile}...')
-          
+        print('Annotation using DBCan')
+        inputs = genomes or [g1, g2]
+        process_input_files(inputs)
+    
     print('Extracting features')
     extract_feat(temp, subs)
     
@@ -248,6 +234,7 @@ def main(mode=None, ofile=None, temp=None,
 
     print('Cleaning')
     run(['rm', '-rf', temp])
+    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="CaCo: A program for predicting carbon source competition and ecological type of interaction from genomes.")
