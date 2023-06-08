@@ -11,9 +11,19 @@ from subprocess import run
 from itertools import combinations
 
 
+def get_file_path(infile):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    file_name = infile  # Replace with your file name
+    file_path = os.path.join(script_dir, file_name)
+    return file_path
+
+
 def download_db():
-    os.makedirs('data', exist_ok=True)
-    run(['wget', '-O', f'data/dbcan.hmm', 'https://bcb.unl.edu/dbCAN2/download/dbCAN-HMMdb-V11.txt'])
+    ofolder = get_file_path('data/')
+    os.makedirs(ofolder, exist_ok=True)
+    run(['wget',
+         '-O', f'{ofolder}/dbcan.hmm',
+         'https://bcb.unl.edu/dbCAN2/download/dbCAN-HMMdb-V11.txt'])
 
 
 def dbcansearch(infile, ofolder, db):
@@ -263,11 +273,11 @@ if __name__ == '__main__':
         else:
             gl = args.gl    
         if args.db == None:
-            database='data/dbcan.hmm'
+            database=get_file_path('data/dbcan.hmm')
         else:
             database = args.db
         if args.subs == None:
-            subs='data/substrate_key.json'
+            subs=get_file_path('data/substrate_key.json')
         else:
             subs = args.subs
         output_file = args.o
