@@ -118,7 +118,7 @@ def EIT(infile, ofile):
     if not ofile.endswith('.xz'): ofile += '.xz'
     infile = pd.read_table(f'{infile}')
     with lzma.open(f'{ofile}', 'wt') as ofile:
-        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\n')
+        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\trelEIT\n')
         for i, j in combinations(infile.genome, 2):
             try:
                 x = calcomp(infile, i, j)
@@ -192,10 +192,11 @@ def calcomp(df, x1, x2):
     intersect = len(a.intersection(b))
     competition, relcomp, prob = probcomp(len(a), len(b), intersect)
     EIT = 1 - 2*competition
+    relEIT = 1 - 2*relcomp
     return (x1, x2, len(a),
             len(b), intersect,
             competition, relcomp, prob,
-            EIT)    
+            EIT, relEIT)    
 
 
 def predict_genes(infile, outdir):
