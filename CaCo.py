@@ -118,7 +118,7 @@ def EIT(infile, ofile):
     if not ofile.endswith('.xz'): ofile += '.xz'
     infile = pd.read_table(f'{infile}')
     with lzma.open(f'{ofile}', 'wt') as ofile:
-        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\tprob\tEIT\n')
+        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\n')
         for i, j in combinations(infile.genome, 2):
             try:
                 x = calcomp(infile, i, j)
@@ -167,13 +167,13 @@ def probcomp(m, n, k):
     # initial check
     if (m+n) <= k:
         print('ERR - Intersection is wrong sized')
-        return 'n.a.', 'n.a.'
+        return 'n.a.', 'n.a.', 'n.a.'
     if (m == 0) and (n == 0):
         print('ERR - Both sets are empty')
-        return 0, 1.0
+        return 0, 0, 1.0
     if (m == 0) or (n == 0):
         print('WARN - A set is empty')
-        return 0, 1.0
+        return 0, 0, 1.0
     if not ((m >= k) and (n >= k)):
         print('ERR - Intersection is bigger than ind. set')
         return 'n.a.', 'n.a.'
@@ -183,18 +183,18 @@ def probcomp(m, n, k):
     comp = k/(m+n-k)
     comp /= maxcomp
     probability = calculate_overlap_probability(m, n, k)
-    return comp, probability
+    return k/(m+n-k), comp, probability
     
     
 def calcomp(df, x1, x2):
     a = set(df.loc[df.genome==x1][df.columns[-1]].tolist()[0].split(', '))
     b = set(df.loc[df.genome==x2][df.columns[-1]].tolist()[0].split(', '))
     intersect = len(a.intersection(b))
-    competition, prob = probcomp(len(a), len(b), intersect)
+    competition, relcomp, prob = probcomp(len(a), len(b), intersect)
     EIT = 1 - 2*competition
     return (x1, x2, len(a),
             len(b), intersect,
-            competition, prob,
+            competition, relcomp, prob,
             EIT)    
 
 
