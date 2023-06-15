@@ -164,6 +164,13 @@ def calculate_overlap_probability(n1, n2, k, num_trials=1000):
     
     
 def probcomp(m, n, k):
+    # initial check
+    if (m+n) <= k:
+        print('ERR - Intersection is wrong sized')
+        return '', '', ''
+    if (m == 0) and (n == 0):
+        print('ERR - Both sets are empty')
+        return '', '', ''
     # to calculate maxcomp
     ke = min(m, n)
     maxcomp = ke / (m+n-ke)
