@@ -167,16 +167,16 @@ def probcomp(m, n, k):
     # initial check
     if (m+n) <= k:
         print('ERR - Intersection is wrong sized')
-        return 'n.a.', 'n.a.', 'n.a.'
+        return 'n.a.', 'n.a.'
     if (m == 0) and (n == 0):
         print('ERR - Both sets are empty')
-        return 0, 0, 1.0
+        return 0, 1.0
     if (m == 0) or (n == 0):
         print('WARN - A set is empty')
-        return 0, 0, 1.0
+        return 0, 1.0
     if not ((m >= k) and (n >= k)):
         print('ERR - Intersection is bigger than ind. set')
-        return 'n.a.', 'n.a.', 'n.a.'
+        return 'n.a.', 'n.a.'
     # to calculate maxcomp
     ke = min(m, n)
     maxcomp = ke / (m+n-ke)
