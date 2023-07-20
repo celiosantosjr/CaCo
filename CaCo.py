@@ -121,7 +121,7 @@ def EIT(infile, ofile):
     if len(infile) < 2:
         return 'Only genomes without assigned substrates'
     with lzma.open(f'{ofile}', 'wt') as ofile:
-        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\n')
+        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\trelEIT\n')
         for i, j in combinations(infile.genome, 2):
             try:
                 x = calcomp(infile, i, j)
