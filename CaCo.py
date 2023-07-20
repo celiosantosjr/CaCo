@@ -117,16 +117,16 @@ def process_hmmsearch_output(infile, ofolder):
 def EIT(infile, ofile):
     if not ofile.endswith('.xz'): ofile += '.xz'
     infile = pd.read_table(f'{infile}')
+    infile = infile.dropna()
+    if len(infile) < 2:
+        return 'Only genomes without assigned substrates'
     with lzma.open(f'{ofile}', 'wt') as ofile:
-        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\trelEIT\n')
+        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\n')
         for i, j in combinations(infile.genome, 2):
             try:
                 x = calcomp(infile, i, j)
             except:
-                if i not in infile.genome:
-                    print(f'Genome {i} does not exist in the table')
-                elif j not in infile.genome:
-                    print(f'Genome {j} does not exist in the table')
+                print(f'ERR :: Failed the pair {i} and {j}')
             else:
                 x = [str(y) for y in x]
                 x = '\t'.join(x)
@@ -166,16 +166,16 @@ def calculate_overlap_probability(n1, n2, k, num_trials=1000):
 def probcomp(m, n, k):
     # initial check
     if (m+n) <= k:
-        print('ERR - Intersection is wrong sized')
+        print('ERR :: Intersection is wrong sized')
         return 'n.a.', 'n.a.', 'n.a.'
     if (m == 0) and (n == 0):
-        print('ERR - Both sets are empty')
+        print('ERR :: Both sets are empty')
         return 0, 0, 1.0
     if (m == 0) or (n == 0):
-        print('WARN - A set is empty')
+        print('WARN :: A set is empty')
         return 0, 0, 1.0
     if not ((m >= k) and (n >= k)):
-        print('ERR - Intersection is bigger than ind. set')
+        print('ERR :: Intersection is bigger than ind. set')
         return 'n.a.', 'n.a.'
     # to calculate maxcomp
     ke = min(m, n)
