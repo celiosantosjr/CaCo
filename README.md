@@ -3,6 +3,13 @@ CaCo: A program for predicting carbon source competition and ecological type of 
 
 ## Installation
 
+First download the repository:
+
+```
+git clone https://github.com/celiosantosjr/CaCo
+cd CaCo/
+```
+
 CaCo is easily installed using conda:
 
 ```
