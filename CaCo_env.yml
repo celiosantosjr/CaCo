@@ -4,12 +4,10 @@ channels:
   - bioconda
 dependencies:
   - python=3.9
+  - xz
   - numpy
   - pandas
   - matplotlib
   - tqdm
-  - lzma
-  - json
   - hmmer
   - prodigal
-
