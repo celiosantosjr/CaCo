@@ -95,11 +95,11 @@ C. The table with competition scores contains the following columns:
     - set2: number of unique carbon substrates detected in genome 2
     - intersection: number of carbon substrates overlapping between genome 1 and 2
     - competition: the Jaccard distance between sets 1 and 2 normalized by the maximum Jaccard distance possible
-    - prob: Monte-Carlo probability calculated with 1,000 simulations of randomly get such intersection, thus competition
-    - EIT: ecological interaction type (1 - 2 * competition)
+    - prob: Permutation probability calculated with 1,000 simulations of randomly get such intersection, thus competition
+    - RPS: Resource Partitioning Score (1 - 2 * competition)
 
 Example:
 
-| genome1	| genome2	| set1	| set2	| intersection	| competition	| prob	| EIT |
+| genome1	| genome2	| set1	| set2	| intersection	| competition	| prob	| RPS |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | TARA_SAMN05326651_METAG_RED00102 | TARA_SAMEA2620259_METAG_HFKLHEHB | 10 | 20 | 5 | 0.4 | 0.212 | 0.19999999999999996 |

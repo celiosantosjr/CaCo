@@ -114,14 +114,14 @@ def process_hmmsearch_output(infile, ofolder):
               index_label='Query_Domain')
 
 
-def EIT(infile, ofile):
+def RPS(infile, ofile):
     if not ofile.endswith('.xz'): ofile += '.xz'
     infile = pd.read_table(f'{infile}')
     infile = infile.dropna()
     if len(infile) < 2:
         return 'Only genomes without assigned substrates'
     with lzma.open(f'{ofile}', 'wt') as ofile:
-        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tEIT\trelEIT\n')
+        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n')
         for i, j in combinations(infile.genome, 2):
             try:
                 x = calcomp(infile, i, j)
@@ -191,12 +191,12 @@ def calcomp(df, x1, x2):
     b = set(df.loc[df.genome==x2][df.columns[-1]].tolist()[0].split(', '))
     intersect = len(a.intersection(b))
     competition, relcomp, prob = probcomp(len(a), len(b), intersect)
-    EIT = 1 - 2*competition
-    relEIT = 1 - 2*relcomp
+    RPS = 1 - 2*competition
+    relRPS = 1 - 2*relcomp
     return (x1, x2, len(a),
             len(b), intersect,
             competition, relcomp, prob,
-            EIT, relEIT)    
+            RPS, relRPS)    
 
 
 def predict_genes(infile, outdir):
@@ -243,8 +243,8 @@ def main(mode=None, ofile=None, temp=None, genomes=None, g1=None, g2=None, db=No
     print('Extracting features')
     extract_feat(temp, subs)
     
-    print('Calculating EIT for substrates')
-    EIT('allsubs.tsv', ofile)
+    print('Calculating RPS for substrates')
+    RPS('allsubs.tsv', ofile)
 
     print('Cleaning')
     run(['rm', '-rf', temp])
