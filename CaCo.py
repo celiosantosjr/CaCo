@@ -65,14 +65,13 @@ def predict_genes_pyrodigal(infile, outdir):
         return outfile
     with open(infile, 'rb') as f:
         seq = f.read()
-    genes = pyrodigal.GeneFinder(meta=False)   # single genome mode
-    genes.train(seq)
+    genes = pyrodigal.GeneFinder(meta=False)
+    genes.train(seq, mask=True)   # <-- ADD THIS to match Prodigal -m
     with open(outfile, 'w') as out:
         for idx, pred in enumerate(genes.find_genes(seq), 1):
             prot = pred.translate()
             out.write(f">{os.path.basename(infile)}_gene_{idx}\n{prot}\n")
     return outfile
-
 
 # ---------- HMM search with hmmsearch (parallel) ----------
 def run_hmmsearch(genome_faa, db, outdir, cpu_per_task=2):
