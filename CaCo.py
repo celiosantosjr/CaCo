@@ -8,9 +8,9 @@ import lzma
 import argparse
 import tempfile
 import shutil
+import random
 import subprocess
 import multiprocessing as mp
-from glob import glob
 from itertools import combinations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -18,6 +18,9 @@ import pandas as pd
 from tqdm import tqdm
 import pyrodigal
 
+
+# ---------- Version ------------------------------------------------
+__version__ = "0.2.1a"
 
 # ---------- Helper: get script directory (for data files) ----------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -215,8 +218,11 @@ def extract_features_one(parsed_file, subs_dict):
 
 def extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir):
     """
-    Extract features in parallel and write to disk incrementally
-    to avoid holding all results in memory.
+    Extract features in parallel and write results to disk.
+
+    Note: Results are accumulated in memory (as DataFrames) and written once
+    at the end. This is fast for up to ~10,000 genomes. For larger datasets,
+    a streaming/chunked writer would be required to avoid memory exhaustion.
     """
     fam_path = os.path.join(output_dir, 'allfams.tsv')
     sub_path = os.path.join(output_dir, 'allsubs.tsv')
@@ -381,6 +387,7 @@ if __name__ == '__main__':
                         help="Number of CPU cores to use (default: all)")
     parser.add_argument("--use-pyrodigal", action="store_true",
                         help="Use Pyrodigal for gene prediction (faster, but slightly different from the original PNAS code). If not set, uses Prodigal (subprocess) for exact reproducibility.")
+    parser.add_argument("-v", "--version", action="version", version=f"CaCo {__version__}")
     args = parser.parse_args()
 
     if args.m == 'download':
