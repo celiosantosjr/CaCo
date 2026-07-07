@@ -288,6 +288,9 @@ def compute_rps_chunk(pair_chunk, df_sub, temp_dir):
     with open(temp_out, 'w') as f:
         f.write("genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n")
         for g1, g2 in pair_chunk:
+            # Ensure deterministic order: smaller genome name first
+            if g1 > g2:
+                g1, g2 = g2, g1
             row1 = df_sub[df_sub.genome == g1]
             row2 = df_sub[df_sub.genome == g2]
             if row1.empty or row2.empty:
