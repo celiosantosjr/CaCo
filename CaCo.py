@@ -66,7 +66,7 @@ def predict_genes_pyrodigal(infile, outdir):
     with open(infile, 'rb') as f:
         seq = f.read()
     genes = pyrodigal.GeneFinder(meta=False)
-    genes.train(seq, mask=True)   # <-- ADD THIS to match Prodigal -m
+    genes.train(seq)
     with open(outfile, 'w') as out:
         for idx, pred in enumerate(genes.find_genes(seq), 1):
             prot = pred.translate()
