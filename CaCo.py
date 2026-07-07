@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# CaCo.py - High-throughput Carbon Competition prediction (fully parallel)
+
 import os
 import sys
 import json
@@ -5,7 +8,7 @@ import lzma
 import argparse
 import tempfile
 import shutil
-import subprocess          
+import subprocess
 import multiprocessing as mp
 from glob import glob
 from itertools import combinations
@@ -16,10 +19,11 @@ from tqdm import tqdm
 import pyrodigal
 
 
-# ---------- Helper: get file path relative to script ----------
+# ---------- Helper: get script directory and file paths ----------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 def get_file_path(infile):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(script_dir, infile)
+    return os.path.join(SCRIPT_DIR, infile)
 
 
 # ---------- Download dbCAN HMM database ----------
@@ -61,8 +65,7 @@ def predict_genes_pyrodigal(infile, outdir):
         return outfile
     with open(infile, 'rb') as f:
         seq = f.read()
-    # Single genome mode (set meta=True for metagenomes)
-    genes = pyrodigal.GeneFinder(meta=False)
+    genes = pyrodigal.GeneFinder(meta=False)   # single genome mode
     genes.train(seq)
     with open(outfile, 'w') as out:
         for idx, pred in enumerate(genes.find_genes(seq), 1):
@@ -219,7 +222,6 @@ def probcomp(m, n, k):
 
 # ---------- Pairwise RPS (parallel with chunking) ----------
 def compute_rps_chunk(pair_chunk, df_sub, temp_dir):
-    """Process a list of pairs and write results to a temp file."""
     temp_out = os.path.join(temp_dir, f"rps_{os.getpid()}.tsv")
     with open(temp_out, 'w') as f:
         f.write("genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n")
@@ -305,16 +307,20 @@ def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers):
     print("Extracting features...")
     df_fam, df_sub = extract_features_parallel(parsed_files, subs_dict, num_workers)
 
-    # Optional: save intermediate files
+    # Write intermediate files to the script directory (where tests expect them)
+    fam_path = os.path.join(SCRIPT_DIR, 'allfams.tsv')
+    sub_path = os.path.join(SCRIPT_DIR, 'allsubs.tsv')
+    df_fam.to_csv(fam_path, sep='\t', index=False)
+    df_sub.to_csv(sub_path, sep='\t', index=False)
+    # Also keep copies in temp_dir for reference
     df_fam.to_csv(os.path.join(temp_dir, 'allfams.tsv'), sep='\t', index=False)
     df_sub.to_csv(os.path.join(temp_dir, 'allsubs.tsv'), sep='\t', index=False)
 
-    # 5. Compute pairwise RPS
+    # 5. Compute pairwise RPS (output file is also placed in SCRIPT_DIR)
+    out_path = os.path.join(SCRIPT_DIR, output_file) if not os.path.isabs(output_file) else output_file
     print("Computing pairwise RPS (parallel)...")
-    compute_rps_parallel(df_sub, num_workers, output_file)
+    compute_rps_parallel(df_sub, num_workers, out_path)
 
-    # Cleanup (optional – uncomment if you want to delete temp)
-    # shutil.rmtree(temp_dir, ignore_errors=True)
     print("Done.")
 
 
