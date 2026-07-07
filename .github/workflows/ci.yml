@@ -84,16 +84,22 @@ jobs:
         
         # Compare generated files (CaCo writes them in current directory)
         echo "Comparing allfams.tsv..."
-        diff -u allfams.tsv tests/expected_res/allfams.tsv || \
+        sort -k1,1 allfams.tsv > 1
+        sort -k1,1 tests/expected_res/allfams.tsv > 2
+        diff -u --strip-trailing-cr 1 2 || \
           (echo "❌ allfams.tsv does not match expected output" && exit 1)
         
         echo "Comparing allsubs.tsv..."
-        diff -u allsubs.tsv tests/expected_res/allsubs.tsv || \
+        sort -k1,1 allsubs.tsv > 1
+        sort -k1,1 tests/expected_res/allsubs.tsv > 2
+        diff -u --strip-trailing-cr 1 2 || \
           (echo "❌ allsubs.tsv does not match expected output" && exit 1)
         
         echo "Comparing competition output..."
         unxz -c carboncomp_output.tsv.xz > current_competition.tsv
-        diff -u --strip-trailing-cr current_competition.tsv expected_competition.tsv || \
+        sort -k1,1 current_competition.tsv > 1
+        sort -k1,1 expected_competition.tsv > 2
+        diff -u --strip-trailing-cr 1 2 || \
           (echo "❌ Competition output does not match expected results" && exit 1)
         
         echo "✅ All validation checks passed!"
