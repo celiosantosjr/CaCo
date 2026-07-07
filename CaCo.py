@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # CaCo.py - High-throughput Carbon Competition prediction
-# Parallelized, with safeguards for HPC and reproducibility
 
 import os
 import sys
@@ -226,13 +225,6 @@ def extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir):
         f_fam.write("genome\tfamilies\n")
         f_sub.write("genome\tsubstrates\n")
 
-    # Use a queue or collect results? We'll write as they complete using a lock.
-    # Simpler: use a list of records and write at end – but that can blow memory.
-    # We'll instead write each record individually using a managed lock? That's slow.
-    # Alternative: collect per‑worker chunks and write in bulk.
-    # We'll accumulate results in a list but warn if too many.
-    # For a production version, we would use a queue and a writer process.
-    # Given the scope, we'll collect and then write; but we'll warn if > 10k.
     if len(parsed_files) > 10000:
         print("Warning: many genomes – consider a chunked writer to avoid memory issues.")
     fam_records = []
