@@ -249,7 +249,6 @@ def extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir):
 
 # ---------- Probability overlap ----------
 def probability_overlap(n1, n2, k, trials=1000):
-    import random
     random.seed(42)
     M = 60
     cnt = 0
