@@ -2,9 +2,7 @@ name: CaCo CI
 
 on:
   push:
-    branches: [ "main", "celiosantosjr-patch-1" ]
   pull_request:
-    branches: [ "main" ]
 
 jobs:
   test:
