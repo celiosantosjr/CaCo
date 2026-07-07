@@ -7,10 +7,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
     - name: Checkout repository
@@ -22,13 +18,12 @@ jobs:
         environment-file: CaCo_env.yml
         auto-activate-base: false
         activate-environment: CaCo
-        python-version: ${{ matrix.python-version }}
 
     - name: Cache Conda environment
       uses: actions/cache@v3
       with:
         path: ~/conda_pkgs_dir
-        key: ${{ runner.os }}-conda-${{ hashFiles('CaCo_env.yml') }}-${{ matrix.python-version }}
+        key: ${{ runner.os }}-conda-${{ hashFiles('CaCo_env.yml') }}
         restore-keys: |
           ${{ runner.os }}-conda-
 
@@ -38,7 +33,7 @@ jobs:
         python3 CaCo.py -m download
 
     # ---------- PRODIGAL TESTS ----------
-    - name: Test default mode (Prodigal) - genome groups
+    - name: Test Prodigal - genome groups
       shell: bash -l {0}
       run: |
         echo "Testing genome groups with Prodigal (default)"
@@ -46,7 +41,7 @@ jobs:
         mkdir -p test_outputs/prodigal_groups
         mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/prodigal_groups/
 
-    - name: Test default mode (Prodigal) - pairwise contigs
+    - name: Test Prodigal - pairwise contigs
       shell: bash -l {0}
       run: |
         echo "Testing pairwise contigs with Prodigal (default)"
@@ -56,7 +51,7 @@ jobs:
         mkdir -p test_outputs/prodigal_pairwise
         mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/prodigal_pairwise/
 
-    - name: Test default mode (Prodigal) - pairwise proteins
+    - name: Test Prodigal - pairwise proteins
       shell: bash -l {0}
       run: |
         echo "Testing pairwise proteins with Prodigal (default)"
@@ -66,40 +61,33 @@ jobs:
         mkdir -p test_outputs/prodigal_proteins
         mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/prodigal_proteins/
 
-    - name: Validate Prodigal outputs against expected results
+    - name: Validate Prodigal outputs
       shell: bash -l {0}
       run: |
         echo "Validating Prodigal test outputs..."
         for test_dir in test_outputs/prodigal_groups test_outputs/prodigal_pairwise test_outputs/prodigal_proteins; do
           cd $test_dir
-          # Decompress expected competition output
           unxz -c ../../tests/expected_res/carboncomp_output.tsv.xz > expected_competition.tsv
           unxz -c carboncomp_output.tsv.xz > current_competition.tsv
 
-          # Compare allfams.tsv
           sort -k1,1 allfams.tsv > sorted_actual_fams
           sort -k1,1 ../../tests/expected_res/allfams.tsv > sorted_expected_fams
-          diff -u --strip-trailing-cr sorted_expected_fams sorted_actual_fams || \
-            (echo "❌ allfams.tsv mismatch in $test_dir" && exit 1)
+          diff -u --strip-trailing-cr sorted_expected_fams sorted_actual_fams || exit 1
 
-          # Compare allsubs.tsv
           sort -k1,1 allsubs.tsv > sorted_actual_subs
           sort -k1,1 ../../tests/expected_res/allsubs.tsv > sorted_expected_subs
-          diff -u --strip-trailing-cr sorted_expected_subs sorted_actual_subs || \
-            (echo "❌ allsubs.tsv mismatch in $test_dir" && exit 1)
+          diff -u --strip-trailing-cr sorted_expected_subs sorted_actual_subs || exit 1
 
-          # Compare competition output
           sort -k1,1 current_competition.tsv > sorted_actual_comp
           sort -k1,1 expected_competition.tsv > sorted_expected_comp
-          diff -u --strip-trailing-cr sorted_expected_comp sorted_actual_comp || \
-            (echo "❌ Competition output mismatch in $test_dir" && exit 1)
+          diff -u --strip-trailing-cr sorted_expected_comp sorted_actual_comp || exit 1
 
           cd ../../
         done
         echo "✅ All Prodigal validation checks passed!"
 
-    # ---------- PYRODIGAL TEST (expect same results) ----------
-    - name: Test Pyrodigal mode (fast backend)
+    # ---------- PYRODIGAL TEST ----------
+    - name: Test Pyrodigal mode
       shell: bash -l {0}
       run: |
         echo "Testing Pyrodigal mode (fast backend)"
@@ -109,7 +97,7 @@ jobs:
         mkdir -p test_outputs/pyrodigal
         mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/pyrodigal/
 
-    - name: Validate Pyrodigal outputs against same expected results
+    - name: Validate Pyrodigal outputs
       shell: bash -l {0}
       run: |
         echo "Validating Pyrodigal outputs (should match Prodigal results)..."
@@ -117,25 +105,19 @@ jobs:
         unxz -c ../../tests/expected_res/carboncomp_output.tsv.xz > expected_competition.tsv
         unxz -c carboncomp_output.tsv.xz > current_competition.tsv
 
-        # Compare allfams.tsv
         sort -k1,1 allfams.tsv > sorted_actual_fams
         sort -k1,1 ../../tests/expected_res/allfams.tsv > sorted_expected_fams
-        diff -u --strip-trailing-cr sorted_expected_fams sorted_actual_fams || \
-          (echo "❌ Pyrodigal allfams.tsv mismatch" && exit 1)
+        diff -u --strip-trailing-cr sorted_expected_fams sorted_actual_fams || exit 1
 
-        # Compare allsubs.tsv
         sort -k1,1 allsubs.tsv > sorted_actual_subs
         sort -k1,1 ../../tests/expected_res/allsubs.tsv > sorted_expected_subs
-        diff -u --strip-trailing-cr sorted_expected_subs sorted_actual_subs || \
-          (echo "❌ Pyrodigal allsubs.tsv mismatch" && exit 1)
+        diff -u --strip-trailing-cr sorted_expected_subs sorted_actual_subs || exit 1
 
-        # Compare competition output
         sort -k1,1 current_competition.tsv > sorted_actual_comp
         sort -k1,1 expected_competition.tsv > sorted_expected_comp
-        diff -u --strip-trailing-cr sorted_expected_comp sorted_actual_comp || \
-          (echo "❌ Pyrodigal competition output mismatch" && exit 1)
+        diff -u --strip-trailing-cr sorted_expected_comp sorted_actual_comp || exit 1
 
-        echo "✅ Pyrodigal outputs match the expected Prodigal results."
+        echo "✅ Pyrodigal outputs match expected results."
 
     # ---------- ADDITIONAL TESTS ----------
     - name: Test error handling - missing Prodigal
@@ -174,15 +156,14 @@ jobs:
       shell: bash -l {0}
       run: |
         echo "Testing version flag..."
-        python3 CaCo.py -v | grep -q "CaCo 0.2.1a" || \
-          (echo "❌ Version flag output incorrect" && exit 1)
+        python3 CaCo.py -v | grep -q "CaCo 0.2.1a" || exit 1
         echo "✅ Version flag test passed"
 
     - name: Upload test outputs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-outputs-python${{ matrix.python-version }}
+        name: test-outputs
         path: |
           test_outputs/
           error_output.txt
