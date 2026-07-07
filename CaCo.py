@@ -226,10 +226,6 @@ def extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir):
     """
     fam_path = os.path.join(output_dir, 'allfams.tsv')
     sub_path = os.path.join(output_dir, 'allsubs.tsv')
-    # Write headers
-    with open(fam_path, 'w') as f_fam, open(sub_path, 'w') as f_sub:
-        f_fam.write("genome\tfamilies\n")
-        f_sub.write("genome\tsubstrates\n")
 
     if len(parsed_files) > 10000:
         print("Warning: many genomes – consider a chunked writer to avoid memory issues.")
