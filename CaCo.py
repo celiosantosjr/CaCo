@@ -1,340 +1,369 @@
+#!/usr/bin/env python3
+# CaCo.py - High-throughput Carbon Competition prediction (fully parallel)
+
 import os
+import sys
 import json
 import lzma
-import math
 import argparse
-import pandas as pd
-
+import tempfile
+import shutil
+import subprocess
+import multiprocessing as mp
 from glob import glob
-from tqdm import tqdm
-from subprocess import run
 from itertools import combinations
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
+import pandas as pd
+from tqdm import tqdm
+import pyrodigal
+
+
+# ---------- Helper: get script directory and file paths ----------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_file_path(infile):
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    file_name = infile  # Replace with your file name
-    file_path = os.path.join(script_dir, file_name)
-    return file_path
+    return os.path.join(SCRIPT_DIR, infile)
 
 
+# ---------- Download dbCAN HMM database ----------
 def download_db():
     ofolder = get_file_path('data/')
     os.makedirs(ofolder, exist_ok=True)
     file_path = f'{ofolder}/dbcan.hmm'
-    
-    # Download the file
-    result = run(['wget',
-                  '-O', file_path,
-                  'https://pro.unl.edu/dbCAN2/download_file.php?file=dbCAN-HMMdb-V11.txt'],
-                  capture_output=True, text=True)
-    
+    result = subprocess.run(
+        ['wget', '-O', file_path,
+         'https://pro.unl.edu/dbCAN2/download_file.php?file=dbCAN-HMMdb-V11.txt'],
+        capture_output=True, text=True
+    )
     if result.returncode != 0:
         return f"Download failed: {result.stderr}"
-    
-    # Check file content
+    # Validate header/footer
     try:
         with open(file_path, 'r') as f:
-            # Read first line (or enough to see the header)
-            first_line = f.readline().strip()
-            # The expected header is exactly "HMMER3/b [3.0 | March 2010]"
-            if not first_line.startswith("HMMER3/b [3.0 | March 2010]"):
-                return "Database was not properly downloaded: incorrect file header"
-            
-            # Move to the end of file to check trailing "//"
+            first = f.readline().strip()
+            if not first.startswith("HMMER3/b [3.0 | March 2010]"):
+                return "Database header incorrect"
             f.seek(0, os.SEEK_END)
-            file_size = f.tell()
-            if file_size < 2:
-                return "Database was not properly downloaded: file too short"
-            
-            # Read the last few bytes (allow for trailing newline)
-            f.seek(max(0, file_size - 10), os.SEEK_SET)
-            tail = f.read()
-            # Remove trailing whitespace and check if ends with "//"
-            if not tail.rstrip().endswith("//"):
-                return "Database was not properly downloaded: missing end marker"
-    
+            size = f.tell()
+            if size < 2:
+                return "File too short"
+            f.seek(max(0, size - 10), os.SEEK_SET)
+            tail = f.read().rstrip()
+            if not tail.endswith("//"):
+                return "Missing end marker"
     except Exception as e:
-        return f"Database was not properly downloaded: error reading file - {e}"
+        return f"Error reading file: {e}"
+    return "Download successful"
 
 
-def dbcansearch(infile, ofolder, db):
-    ofile = infile.split("/")[-1].replace(".faa", ".dbcan")
-    ofile = f'{ofolder}/{ofile}'
-    if os.path.exists(f'{ofile}.parsed'):
-        return ofile
-        if os.path.exists(ofile):
-            return ofile
-    else:
-        run(['hmmsearch',
-             '--cpu', '3',
-             '-o', '/dev/null',
-             '--domtblout', ofile,
-             db,
-             infile])
-        return ofile
-         
+# ---------- Gene prediction with Pyrodigal (parallel) ----------
+def predict_genes_pyrodigal(infile, outdir):
+    """Predict genes from nucleotide genome, return path to .faa."""
+    outfile = os.path.join(outdir, os.path.basename(infile).rsplit('.', 1)[0] + '.faa')
+    if os.path.exists(outfile):
+        return outfile
+    with open(infile, 'rb') as f:
+        seq = f.read()
+    genes = pyrodigal.GeneFinder(meta=False)
+    genes.train(seq)
+    with open(outfile, 'w') as out:
+        for idx, pred in enumerate(genes.find_genes(seq), 1):
+            prot = pred.translate()
+            out.write(f">{os.path.basename(infile)}_gene_{idx}\n{prot}\n")
+    return outfile
 
-def process_hmmsearch_output(infile, ofolder):
-    output_file = f'{infile}.parsed'
-    if os.path.exists(output_file):
-        return ''
-    # Define minimum coverage and e-value thresholds
+# ---------- HMM search with hmmsearch (parallel) ----------
+def run_hmmsearch(genome_faa, db, outdir, cpu_per_task=2):
+    outfile = os.path.join(outdir, os.path.basename(genome_faa).replace('.faa', '.dbcan'))
+    if os.path.exists(outfile):
+        return outfile
+    cmd = [
+        'hmmsearch',
+        '--cpu', str(cpu_per_task),
+        '-o', '/dev/null',
+        '--domtblout', outfile,
+        db, genome_faa
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return outfile
+
+
+def parallel_hmmsearch(faa_files, db, outdir, num_workers, cpu_per_task=2):
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = {ex.submit(run_hmmsearch, faa, db, outdir, cpu_per_task): faa
+                   for faa in faa_files}
+        results = []
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="HMM search"):
+            results.append(fut.result())
+    return results
+
+
+# ---------- Parse hmmsearch output (parallel) ----------
+def parse_hmmsearch_output(infile, outdir):
+    parsed_file = f'{infile}.parsed'
+    if os.path.exists(parsed_file):
+        return parsed_file
+
     min_score = 25
-    min_coverage = 0.35  # Minimum hit coverage
-    max_evalue = 1e-15   # Maximum hit e-value
-    # Open the output file from hmmsearch
-    with open(infile, 'r') as f:
-        lines = f.readlines()
-    # Initialize variables to store the best hits
+    min_coverage = 0.35
+    max_evalue = 1e-15
     best_hits = {}
     current_query = None
-    current_best_hit = None
-    # Iterate over the lines in the output file
-    for line in lines:
-        # Check if the line contains a query domain
-        if line.startswith('#'):
-            # Skip the header lines
-            continue
-        # Extract the fields from the tab-separated line
-        fields = line.strip().split()
-        # Check if this line corresponds to a new query domain
-        query_name = fields[0]
-        if query_name != current_query:
-            # Store the best hit for the previous query domain, if available
-            if current_query is not None and current_best_hit is not None:
-                hit_name, hit_evalue, hit_score, hit_start, hit_end, hit_coverage = current_best_hit
-                if (hit_coverage >= min_coverage) and (hit_evalue <= max_evalue) and (hit_score >= min_score):
-                    best_hits[current_query] = current_best_hit
-            # Reset the current query and best hit
-            current_query = query_name
-            current_best_hit = None
-        # Extract hit information from the fields
-        hit_name = fields[3].split('.')[0]
-        hit_evalue = float(fields[6])
-        hit_score = float(fields[7])
-        hit_start = int(fields[15])
-        hit_end = int(fields[16])
-        hit_length = int(fields[17])
-        query_length = int(fields[2])
-        hit_coverage = (hit_end - hit_start + 1) / query_length
-        hit_coverage = min(1.0, hit_coverage)  # fix the coverage when the hit spans across multiple non-contiguous regions of the query sequence.
-        # Update the current best hit if needed
-        if current_best_hit is None or hit_score > current_best_hit[2] or \
-           (hit_score == current_best_hit[2] and hit_evalue < current_best_hit[1]) or \
-           (hit_score == current_best_hit[2] and hit_evalue == current_best_hit[1] and hit_coverage > current_best_hit[5]):
-            current_best_hit = (hit_name,
-                                hit_evalue,
-                                hit_score,
-                                hit_start,
-                                hit_end,
-                                hit_coverage)
-    # Store the best hit for the last query domain, if available
-    if current_query is not None and current_best_hit is not None:
-        hit_name, hit_evalue, hit_score, hit_start, hit_end, hit_coverage = current_best_hit
-        if hit_coverage >= min_coverage and hit_evalue <= max_evalue:
-            best_hits[current_query] = current_best_hit
-    # Create a pandas DataFrame from the best hits dictionary
-    df = pd.DataFrame.from_dict(best_hits,
-                                orient='index',
-                                columns=['Hit_Name', 'Hit_Evalue',
-                                         'Hit_Score', 'Hit_Start',
-                                         'Hit_End', 'Hit_Coverage'])
-    # Write the DataFrame to a TSV file
-    df.to_csv(output_file,
-              sep='\t',
-              index_label='Query_Domain')
+    current_best = None
+
+    with open(infile, 'r') as f:
+        for line in f:
+            if line.startswith('#'):
+                continue
+            fields = line.strip().split()
+            if len(fields) < 18:
+                continue
+            qname = fields[0]
+            hname = fields[3].split('.')[0]
+            evalue = float(fields[6])
+            score = float(fields[7])
+            hstart = int(fields[15])
+            hend = int(fields[16])
+            qlen = int(fields[2])
+            cov = min(1.0, (hend - hstart + 1) / qlen)
+
+            if qname != current_query:
+                if current_query is not None and current_best is not None:
+                    if (current_best[5] >= min_coverage and
+                        current_best[1] <= max_evalue and
+                        current_best[2] >= min_score):
+                        best_hits[current_query] = current_best
+                current_query = qname
+                current_best = None
+
+            if (current_best is None or score > current_best[2] or
+                (score == current_best[2] and evalue < current_best[1]) or
+                (score == current_best[2] and evalue == current_best[1] and cov > current_best[5])):
+                current_best = (hname, evalue, score, hstart, hend, cov)
+
+    if current_query is not None and current_best is not None:
+        if (current_best[5] >= min_coverage and
+            current_best[1] <= max_evalue and
+            current_best[2] >= min_score):
+            best_hits[current_query] = current_best
+
+    df = pd.DataFrame.from_dict(best_hits, orient='index',
+                                columns=['Hit_Name','Hit_Evalue','Hit_Score',
+                                         'Hit_Start','Hit_End','Hit_Coverage'])
+    df.to_csv(parsed_file, sep='\t', index_label='Query_Domain')
+    return parsed_file
 
 
-def RPS(infile, ofile):
-    if not ofile.endswith('.xz'): ofile += '.xz'
-    infile = pd.read_table(f'{infile}')
-    infile = infile.dropna()
-    if len(infile) < 2:
-        return 'Only genomes without assigned substrates'
-    with lzma.open(f'{ofile}', 'wt') as ofile:
-        ofile.write('genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n')
-        for i, j in combinations(infile.genome, 2):
-            try:
-                x = calcomp(infile, i, j)
-            except:
-                print(f'ERR :: Failed the pair {i} and {j}')
-            else:
-                x = [str(y) for y in x]
-                x = '\t'.join(x)
-                ofile.write(f'{x}\n')
-    
-def extract_feat(infolder, subs):
-    # Use write mode to overwrite any previous file
-    with open('allfams.tsv', 'w') as handle:
-        handle.write('genome\tfamilies\n')
-        with open('allsubs.tsv', 'w') as handle1:
-            handle1.write('genome\tsubstrates\n')
-            for infile in tqdm(glob(f'{infolder}/*.dbcan.parsed')):
-                namea = infile.split('/')[-1].replace('.dbcan.parsed', '')
-                a = pd.read_table(infile)
-                a = set(a.Hit_Name)
-                a = {x.split('_')[0] for x in a}
-                # Sort families alphabetically
-                sorted_families = sorted(a)
-                
-                subsa = set(', '.join([subs.get(y, '') for y in a if y in subs]).split(', '))
-                # Sort substrates alphabetically
-                sorted_substrates = sorted(subsa)
-                
-                handle.write(f"{namea}\t{', '.join(sorted_families)}\n")
-                handle1.write(f"{namea}\t{', '.join(sorted_substrates)}\n")
+def parallel_parse(dbcan_files, outdir, num_workers):
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = {ex.submit(parse_hmmsearch_output, f, outdir): f for f in dbcan_files}
+        results = []
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Parsing HMM"):
+            results.append(fut.result())
+    return results
 
 
-def calculate_overlap_probability(n1, n2, k, num_trials=1000):
+# ---------- Feature extraction (parallel) ----------
+def extract_features_one(parsed_file, subs_dict):
+    name = os.path.basename(parsed_file).replace('.dbcan.parsed', '')
+    df = pd.read_table(parsed_file)
+    families = set(df.Hit_Name)
+    families = {x.split('_')[0] for x in families}
+    sorted_fam = sorted(families)
+    subs_set = set()
+    for fam in families:
+        if fam in subs_dict:
+            subs_set.update(subs_dict[fam].split(', '))
+    sorted_subs = sorted(subs_set)
+    return name, sorted_fam, sorted_subs
+
+
+def extract_features_parallel(parsed_files, subs_dict, num_workers):
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = {ex.submit(extract_features_one, pf, subs_dict): pf for pf in parsed_files}
+        fam_records = []
+        sub_records = []
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Extracting features"):
+            name, fams, subs = fut.result()
+            fam_records.append({'genome': name, 'families': ', '.join(fams)})
+            sub_records.append({'genome': name, 'substrates': ', '.join(subs)})
+    return pd.DataFrame(fam_records), pd.DataFrame(sub_records)
+
+
+# ---------- Probability overlap ----------
+def probability_overlap(n1, n2, k, trials=1000):
     import random
     random.seed(42)
-    M = 60  # max substrates possible
-    overlap_count = 0
-    for _ in range(num_trials):
-        sample1 = random.sample(range(M), min(n1, M))
-        sample2 = random.sample(range(M), min(n2, M))
-        overlap = len(set(sample1).intersection(set(sample2)))
-        if overlap >= k:
-            overlap_count += 1
-    probability = overlap_count / num_trials
-    return probability
-    
-    
+    M = 60
+    cnt = 0
+    for _ in range(trials):
+        s1 = set(random.sample(range(M), min(n1, M)))
+        s2 = set(random.sample(range(M), min(n2, M)))
+        if len(s1 & s2) >= k:
+            cnt += 1
+    return cnt / trials
+
+
 def probcomp(m, n, k):
-    # initial check
-    if (m+n) <= k:
-        print('ERR :: Intersection is wrong sized')
+    if (m+n) <= k or (m==0 and n==0):
+        return 0, 0, 1.0
+    if m==0 or n==0:
+        return 0, 0, 1.0
+    if not (m >= k and n >= k):
         return 'n.a.', 'n.a.', 'n.a.'
-    if (m == 0) and (n == 0):
-        print('ERR :: Both sets are empty')
-        return 0, 0, 1.0
-    if (m == 0) or (n == 0):
-        print('WARN :: A set is empty')
-        return 0, 0, 1.0
-    if not ((m >= k) and (n >= k)):
-        print('ERR :: Intersection is bigger than ind. set')
-        return 'n.a.', 'n.a.'
-    # to calculate maxcomp
-    ke = min(m, n)
-    maxcomp = ke / (m+n-ke)
+    maxcomp = min(m,n) / (m+n-min(m,n))
     comp = k/(m+n-k)
-    comp /= maxcomp
-    probability = calculate_overlap_probability(m, n, k)
-    return k/(m+n-k), comp, probability
-    
-    
-def calcomp(df, x1, x2):
-    a = set(df.loc[df.genome==x1][df.columns[-1]].tolist()[0].split(', '))
-    b = set(df.loc[df.genome==x2][df.columns[-1]].tolist()[0].split(', '))
-    intersect = len(a.intersection(b))
-    competition, relcomp, prob = probcomp(len(a), len(b), intersect)
-    RPS = 1 - 2*competition
-    relRPS = 1 - 2*relcomp
-    return (x1, x2, len(a),
-            len(b), intersect,
-            competition, relcomp, prob,
-            RPS, relRPS)    
+    relcomp = comp / maxcomp if maxcomp != 0 else 0
+    prob = probability_overlap(m, n, k)
+    return comp, relcomp, prob
 
 
-def predict_genes(infile, outdir):
-    ofile = infile.split('/')[-1]
-    ofile = '.'.join(ofile.split('.')[:-1])
-    ofile += '.faa'
-    run(['prodigal',
-         '-a', f'{outdir}/{ofile}',
-         '-c',
-         '-i', infile,
-         '-m',
-         '-o', '/dev/null',
-         '-p', 'single',
-         '-q'])
-         
-         
-def main(mode=None, ofile=None, temp=None, genomes=None, g1=None, g2=None, db=None, subs=None):
-    subs = json.load(open(subs))
-    os.makedirs(temp, exist_ok=True)
-    if genomes:
-            genomes = [row.strip() for row in open(genomes, 'r')]
-            
-    def process_input_files(inputs):
-        for infile in inputs:
-            infile = dbcansearch(infile, temp, db)
-            process_hmmsearch_output(infile, temp)
-            run(['rm', '-rf', infile])
-            print(f'\t{infile}...')
-    
+# ---------- Pairwise RPS (parallel with chunking) ----------
+def compute_rps_chunk(pair_chunk, df_sub, temp_dir):
+    temp_out = os.path.join(temp_dir, f"rps_{os.getpid()}.tsv")
+    with open(temp_out, 'w') as f:
+        f.write("genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n")
+        for g1, g2 in pair_chunk:
+            row1 = df_sub[df_sub.genome == g1]
+            row2 = df_sub[df_sub.genome == g2]
+            if row1.empty or row2.empty:
+                continue
+            set1 = set(row1.iloc[0]['substrates'].split(', '))
+            set2 = set(row2.iloc[0]['substrates'].split(', '))
+            intersect = len(set1 & set2)
+            m, n = len(set1), len(set2)
+            competition, relcomp, prob = probcomp(m, n, intersect)
+            if isinstance(competition, str):
+                continue
+            RPS = 1 - 2 * competition
+            relRPS = 1 - 2 * relcomp
+            f.write(f"{g1}\t{g2}\t{m}\t{n}\t{intersect}\t{competition}\t{relcomp}\t{prob}\t{RPS}\t{relRPS}\n")
+    return temp_out
+
+
+def compute_rps_parallel(df_sub, num_workers, output_file):
+    genomes = df_sub['genome'].tolist()
+    pairs = list(combinations(genomes, 2))
+    if not pairs:
+        return
+
+    chunk_size = max(1, len(pairs) // num_workers)
+    chunks = [pairs[i:i+chunk_size] for i in range(0, len(pairs), chunk_size)]
+
+    temp_dir = tempfile.mkdtemp(prefix="rps_chunks_")
+    try:
+        with ProcessPoolExecutor(max_workers=num_workers) as ex:
+            futures = [ex.submit(compute_rps_chunk, ch, df_sub, temp_dir) for ch in chunks]
+            temp_files = []
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Computing RPS"):
+                temp_files.append(fut.result())
+
+        # Merge all temp files into final compressed output
+        with lzma.open(output_file, 'wt') as out_f:
+            header_written = False
+            for tf in temp_files:
+                with open(tf, 'r') as inf:
+                    if not header_written:
+                        out_f.write(inf.readline())
+                        header_written = True
+                    else:
+                        inf.readline()  # skip header
+                    for line in inf:
+                        out_f.write(line)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+# ---------- Main orchestration ----------
+def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers):
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # 1. Gene prediction (if nucleotides)
     if mode == 'from_nucleotides':
-        print('Gene prediction')
-        inputs = genomes or [g1, g2]
-        for g in inputs:
-            predict_genes(g, temp)
-            print(f'\t{g}...')
-
-        print('Annotation using DBCan')
-        process_input_files(glob(f'{temp}/*.faa'))
+        print("Gene prediction with Pyrodigal (parallel)...")
+        faa_files = []
+        with ProcessPoolExecutor(max_workers=num_workers) as ex:
+            futures = {ex.submit(predict_genes_pyrodigal, g, temp_dir): g for g in genomes_list}
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Gene prediction"):
+                faa_files.append(fut.result())
     else:
-        print('Annotation using DBCan')
-        inputs = genomes or [g1, g2]
-        process_input_files(inputs)
-    
-    print('Extracting features')
-    extract_feat(temp, subs)
-    
-    print('Calculating RPS for substrates')
-    RPS('allsubs.tsv', ofile)
+        faa_files = [g for g in genomes_list if os.path.exists(g)]
 
-    print('Cleaning')
-    run(['rm', '-rf', temp])
-    
+    if not faa_files:
+        print("No input files found. Exiting.")
+        return
+
+    # 2. HMM search
+    print("Running hmmsearch in parallel...")
+    dbcan_files = parallel_hmmsearch(faa_files, db, temp_dir, num_workers, cpu_per_task=2)
+
+    # 3. Parse HMM output
+    print("Parsing hmmsearch output...")
+    parsed_files = parallel_parse(dbcan_files, temp_dir, num_workers)
+
+    # 4. Extract features
+    print("Extracting features...")
+    df_fam, df_sub = extract_features_parallel(parsed_files, subs_dict, num_workers)
+
+    # Write intermediate files to the script directory (where tests expect them)
+    fam_path = os.path.join(SCRIPT_DIR, 'allfams.tsv')
+    sub_path = os.path.join(SCRIPT_DIR, 'allsubs.tsv')
+    df_fam.to_csv(fam_path, sep='\t', index=False)
+    df_sub.to_csv(sub_path, sep='\t', index=False)
+    # Also keep copies in temp_dir for reference
+    df_fam.to_csv(os.path.join(temp_dir, 'allfams.tsv'), sep='\t', index=False)
+    df_sub.to_csv(os.path.join(temp_dir, 'allsubs.tsv'), sep='\t', index=False)
+
+    # 5. Compute pairwise RPS (output file is also placed in SCRIPT_DIR)
+    out_path = os.path.join(SCRIPT_DIR, output_file) if not os.path.isabs(output_file) else output_file
+    print("Computing pairwise RPS (parallel)...")
+    compute_rps_parallel(df_sub, num_workers, out_path)
+
+    print("Done.")
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="CaCo: A program for predicting carbon source competition and ecological type of interaction from genomes.")
-    parser.add_argument("-m", type=str, default='from_proteins', required=True, help="Mode: download, from_proteins or from_nucleotides (default: from_proteins)")
-    parser.add_argument("-db", type=str, default=None, help="Address to the dbCAN database")
-    parser.add_argument("-subs", type=str, default=None, help="Address to the substrate database")
-    parser.add_argument("-tmp", type=str, default='tmp/', help='Temporary directory address (default: tmp/)')
-    parser.add_argument("-g1", type=str, help="Address to genome 1")
-    parser.add_argument("-g2", type=str, help="Address to genome 2")
-    parser.add_argument("-gl", type=str, default=None, help="List of genome addresses to test pairwise comparison override g1 and g2 arguments")
-    parser.add_argument("-o", type=str, default='carboncomp_output.tsv.xz', help='Output file (default: carboncomp_output.tsv.xz)')
-       
+    parser = argparse.ArgumentParser(description="CaCo parallel: Carbon source competition prediction.")
+    parser.add_argument("-m", type=str, default='from_proteins',
+                        choices=['download', 'from_proteins', 'from_nucleotides'],
+                        help="Mode: download, from_proteins, or from_nucleotides")
+    parser.add_argument("-db", type=str, default=None, help="Path to dbCAN HMM database")
+    parser.add_argument("-subs", type=str, default=None, help="Path to substrate key JSON")
+    parser.add_argument("-tmp", type=str, default='tmp/', help="Temporary directory")
+    parser.add_argument("-g1", type=str, help="Genome file 1 (or list file with -gl)")
+    parser.add_argument("-g2", type=str, help="Genome file 2")
+    parser.add_argument("-gl", type=str, default=None, help="File with list of genome paths")
+    parser.add_argument("-o", type=str, default='carboncomp_output.tsv.xz', help="Output file")
+    parser.add_argument("-cpus", type=int, default=mp.cpu_count(),
+                        help="Number of CPU cores to use (default: all)")
     args = parser.parse_args()
 
-    mode = args.m
-    
-    if mode == 'download':
-        download_db()
-        print('Downloaded DBCAN')
+    if args.m == 'download':
+        print(download_db())
+        sys.exit(0)
+
+    # Determine genome list
+    if args.gl:
+        with open(args.gl, 'r') as f:
+            genomes = [line.strip() for line in f if line.strip()]
     else:
-        if args.gl == None:
-            g1 = args.g1
-            g2 = args.g2
+        if args.g1 and args.g2:
+            genomes = [args.g1, args.g2]
         else:
-            gl = args.gl    
-        if args.db == None:
-            database=get_file_path('data/dbcan.hmm')
-        else:
-            database = args.db
-        if args.subs == None:
-            subs=get_file_path('data/substrate_key.json')
-        else:
-            subs = args.subs
-        output_file = args.o
-        temp = args.tmp
-        if args.gl:
-            main(mode=mode,
-                 ofile=output_file,
-                 temp=temp,
-                 db=database,
-                 subs=subs,
-                 genomes=gl)
-        else:
-            main(mode=mode,
-                 ofile=output_file,
-                 temp=temp,
-                 db=database,
-                 subs=subs,
-                 g1=g1,
-                 g2=g2)
-    
+            print("Error: Provide either -gl or both -g1 and -g2")
+            sys.exit(1)
+
+    # Resolve database and substrate files
+    db = args.db if args.db else get_file_path('data/dbcan.hmm')
+    subs = args.subs if args.subs else get_file_path('data/substrate_key.json')
+    with open(subs, 'r') as f:
+        subs_dict = json.load(f)
+
+    main(mode=args.m,
+         genomes_list=genomes,
+         temp_dir=args.tmp,
+         output_file=args.o,
+         db=db,
+         subs_dict=subs_dict,
+         num_workers=args.cpus)

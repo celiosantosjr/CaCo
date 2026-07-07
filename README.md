@@ -8,6 +8,8 @@
 
 CaCo: A program for predicting carbon source competition and ecological type of interaction from genomes.
 
+To see the recent changes and updates, please follow our [What's New Documentation](whats_new.md).
+
 ## Installation
 
 First download the repository:
@@ -79,7 +81,7 @@ Example:
 | genome | families |
 | :---: | :---: |
 | TARA_SAMN05326651_METAG_RED00102 | AA3, PL12, GH102, CE11, GT2, GT4, GH73, GT19, AA7, GH109, GT5, GT41, CE4, GT9 |
-| TARA_SAMEA2620259_METAG_HFKLHEHB | GH18, GT28, CE1, GT30, CE11, GT17, GH1, GT2, GT4, GT9, GH97, GH13, GT5, CE4, GH171 |
+| TARA_SAMEA2620259_METAG_HFKLHEHB | GH18, GT28, CE1, GT30, CE11, GT17, GH1, GT2, GT4, GT9, GH97, GH13, GT5, CE4, GH171, GH2 |
 
 
 B. Table of the substrates resources:
@@ -92,7 +94,7 @@ Example:
 | genome | substrates |
 | :---: | :---: |
 | TARA_SAMN05326651_METAG_RED00102 | cellooligosaccharide, host glycan, exo-polysaccharide, chitin, chitooligosaccharide, peptidoglycan, cellulose, xylan, glucooligosaccharide, lignin | 
-| TARA_SAMEA2620259_METAG_HFKLHEHB | host glycan, exo-polysaccharide, chitin, glycogen, uric acid, beta-galactan, beta-glucuronan, beta-glucan, glucosylglycerate, xylan, beta-mannan, sucrose, human milk polysaccharide, alpha-glucan, alkaloid, trehalose, polyphenol, peptidoglycan, starch, beta-fucosides | 
+| TARA_SAMEA2620259_METAG_HFKLHEHB | alkaloid, alpha-glucan, alpha-mannan, arabinan, beta-fucosides, beta-galactan, beta-glucan, beta-glucuronan, beta-mannan, chitin, chitosan, exo-polysaccharide, glucosylglycerate, glycogen, host glycan, human milk polysaccharide, pectin, peptidoglycan, polyphenol, starch, sucrose, trehalose, uric acid, xylan | 
 
 C. The table with competition scores contains the following columns:
 
@@ -109,4 +111,4 @@ Example:
 
 | genome1	| genome2	| set1	| set2	| intersection	| competition	| prob	| RPS |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| TARA_SAMN05326651_METAG_RED00102 | TARA_SAMEA2620259_METAG_HFKLHEHB | 10 | 20 | 5 | 0.4 | 0.212 | 0.19999999999999996 |
+| TARA_SAMEA2620259_METAG_HFKLHEHB | TARA_SAMN05326651_METAG_RED00102 | 24 | 10 | 5 | 0.4 | 0.372 | 0.172 |

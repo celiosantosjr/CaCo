@@ -2,6 +2,7 @@ name: CaCo
 channels:
   - defaults
   - bioconda
+  - conda-forge
 dependencies:
   - python=3.9
   - xz
@@ -10,4 +11,7 @@ dependencies:
   - matplotlib
   - tqdm
   - hmmer
-  - prodigal
+  - prodigal          # optional, kept for fallback (but we use pyrodigal)
+  - pip
+  - pip:
+    - pyrodigal       # fast Prodigal replacement
