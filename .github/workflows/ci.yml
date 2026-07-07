@@ -32,77 +32,132 @@ jobs:
       run: |
         python3 CaCo.py -m download
 
-    - name: Run example commands
+    # ---------- PRODIGAL TESTS ----------
+    - name: Test Prodigal - genome groups
       shell: bash -l {0}
       run: |
-        # Files are in tests/example/ as confirmed by debug output
-        GLTEST="tests/example/gltest.txt"
-        FA1="tests/example/TARA_SAMEA2620259_METAG_HFKLHEHB.fa"
-        FA2="tests/example/TARA_SAMN05326651_METAG_RED00102.fa"
-        FAA1="tests/example/TARA_SAMEA2620259_METAG_HFKLHEHB.faa"
-        FAA2="tests/example/TARA_SAMN05326651_METAG_RED00102.faa"
-        
-        # Verify all exist
-        for f in "$GLTEST" "$FA1" "$FA2" "$FAA1" "$FAA2"; do
-          if [ ! -f "$f" ]; then
-            echo "❌ Missing: $f"
-            exit 1
-          fi
-        done
-        
-        # Test 1: Genome groups
-        echo "Running genome groups test"
-        python3 CaCo.py -m from_nucleotides -gl "$GLTEST"
-        
-        # Test 2: Pairwise contigs
-        echo "Running pairwise contigs test"
-        python3 CaCo.py -m from_nucleotides -g1 "$FA1" -g2 "$FA2"
-        
-        # Test 3: Pairwise proteins
-        echo "Running pairwise proteins test"
-        python3 CaCo.py -m from_proteins -g1 "$FAA1" -g2 "$FAA2"
+        echo "Testing genome groups with Prodigal (default)"
+        python3 CaCo.py -m from_nucleotides -gl tests/example/gltest.txt
+        mkdir -p test_outputs/prodigal_groups
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/prodigal_groups/
 
-    - name: Validate output against expected results
+    - name: Test Prodigal - pairwise contigs
       shell: bash -l {0}
       run: |
-        # Expected results are in tests/expected_res/
-        if [ ! -f tests/expected_res/allfams.tsv ]; then
-          echo "❌ Expected allfams.tsv not found in tests/expected_res/"
-          exit 1
-        fi
-        if [ ! -f tests/expected_res/allsubs.tsv ]; then
-          echo "❌ Expected allsubs.tsv not found in tests/expected_res/"
-          exit 1
-        fi
-        if [ ! -f tests/expected_res/carboncomp_output.tsv.xz ]; then
-          echo "❌ Expected carboncomp_output.tsv.xz not found in tests/expected_res/"
-          exit 1
-        fi
-        
-        # Decompress expected competition output
-        unxz -c tests/expected_res/carboncomp_output.tsv.xz > expected_competition.tsv
-        
-        # Compare generated files (CaCo writes them in current directory)
-        echo "Comparing allfams.tsv..."
-        sort -k1,1 allfams.tsv > 1
-        sort -k1,1 tests/expected_res/allfams.tsv > 2
-        diff -u --strip-trailing-cr 1 2 || \
-          (echo "❌ allfams.tsv does not match expected output" && exit 1)
-        
-        echo "Comparing allsubs.tsv..."
-        sort -k1,1 allsubs.tsv > 1
-        sort -k1,1 tests/expected_res/allsubs.tsv > 2
-        diff -u --strip-trailing-cr 1 2 || \
-          (echo "❌ allsubs.tsv does not match expected output" && exit 1)
-        
-        echo "Comparing competition output..."
+        echo "Testing pairwise contigs with Prodigal (default)"
+        python3 CaCo.py -m from_nucleotides \
+          -g1 tests/example/TARA_SAMEA2620259_METAG_HFKLHEHB.fa \
+          -g2 tests/example/TARA_SAMN05326651_METAG_RED00102.fa
+        mkdir -p test_outputs/prodigal_pairwise
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/prodigal_pairwise/
+
+    - name: Test Prodigal - pairwise proteins
+      shell: bash -l {0}
+      run: |
+        echo "Testing pairwise proteins with Prodigal (default)"
+        python3 CaCo.py -m from_proteins \
+          -g1 tests/example/TARA_SAMEA2620259_METAG_HFKLHEHB.faa \
+          -g2 tests/example/TARA_SAMN05326651_METAG_RED00102.faa
+        mkdir -p test_outputs/prodigal_proteins
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/prodigal_proteins/
+
+    - name: Validate Prodigal outputs
+      shell: bash -l {0}
+      run: |
+        echo "Validating Prodigal test outputs..."
+        for test_dir in test_outputs/prodigal_groups test_outputs/prodigal_pairwise test_outputs/prodigal_proteins; do
+          cd $test_dir
+          unxz -c ../../tests/expected_res/carboncomp_output.tsv.xz > expected_competition.tsv
+          unxz -c carboncomp_output.tsv.xz > current_competition.tsv
+
+          sort -k1,1 allfams.tsv > sorted_actual_fams
+          sort -k1,1 ../../tests/expected_res/allfams.tsv > sorted_expected_fams
+          diff -u --strip-trailing-cr sorted_expected_fams sorted_actual_fams || exit 1
+
+          sort -k1,1 allsubs.tsv > sorted_actual_subs
+          sort -k1,1 ../../tests/expected_res/allsubs.tsv > sorted_expected_subs
+          diff -u --strip-trailing-cr sorted_expected_subs sorted_actual_subs || exit 1
+
+          sort -k1,1 current_competition.tsv > sorted_actual_comp
+          sort -k1,1 expected_competition.tsv > sorted_expected_comp
+          diff -u --strip-trailing-cr sorted_expected_comp sorted_actual_comp || exit 1
+
+          cd ../../
+        done
+        echo "✅ All Prodigal validation checks passed!"
+
+    # ---------- PYRODIGAL TEST ----------
+    - name: Test Pyrodigal mode
+      shell: bash -l {0}
+      run: |
+        echo "Testing Pyrodigal mode (fast backend)"
+        python3 CaCo.py -m from_nucleotides --use-pyrodigal \
+          -g1 tests/example/TARA_SAMEA2620259_METAG_HFKLHEHB.fa \
+          -g2 tests/example/TARA_SAMN05326651_METAG_RED00102.fa
+        mkdir -p test_outputs/pyrodigal
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/pyrodigal/
+
+    - name: Validate Pyrodigal outputs
+      shell: bash -l {0}
+      run: |
+        echo "Validating Pyrodigal outputs (should match Prodigal results)..."
+        cd test_outputs/pyrodigal
+        unxz -c ../../tests/expected_res/carboncomp_output.tsv.xz > expected_competition.tsv
         unxz -c carboncomp_output.tsv.xz > current_competition.tsv
-        sort -k1,1 current_competition.tsv > 1
-        sort -k1,1 expected_competition.tsv > 2
-        diff -u --strip-trailing-cr 1 2 || \
-          (echo "❌ Competition output does not match expected results" && exit 1)
-        
-        echo "✅ All validation checks passed!"
+
+        sort -k1,1 allfams.tsv > sorted_actual_fams
+        sort -k1,1 ../../tests/expected_res/allfams.tsv > sorted_expected_fams
+        diff -u --strip-trailing-cr sorted_expected_fams sorted_actual_fams || exit 1
+
+        sort -k1,1 allsubs.tsv > sorted_actual_subs
+        sort -k1,1 ../../tests/expected_res/allsubs.tsv > sorted_expected_subs
+        diff -u --strip-trailing-cr sorted_expected_subs sorted_actual_subs || exit 1
+
+        sort -k1,1 current_competition.tsv > sorted_actual_comp
+        sort -k1,1 expected_competition.tsv > sorted_expected_comp
+        diff -u --strip-trailing-cr sorted_expected_comp sorted_actual_comp || exit 1
+
+        echo "✅ Pyrodigal outputs match expected results."
+
+    # ---------- ADDITIONAL TESTS ----------
+    - name: Test error handling - missing Prodigal
+      shell: bash -l {0}
+      run: |
+        echo "Testing error handling when Prodigal is missing..."
+        PRODIGAL_PATH=$(which prodigal)
+        if [ -n "$PRODIGAL_PATH" ]; then
+          mv "$PRODIGAL_PATH" "${PRODIGAL_PATH}.bak"
+        fi
+
+        set +e
+        python3 CaCo.py -m from_nucleotides \
+          -g1 tests/example/TARA_SAMEA2620259_METAG_HFKLHEHB.fa \
+          -g2 tests/example/TARA_SAMN05326651_METAG_RED00102.fa 2>&1 | tee error_output.txt
+        EXIT_CODE=$?
+        set -e
+
+        if [ -n "$PRODIGAL_PATH" ]; then
+          mv "${PRODIGAL_PATH}.bak" "$PRODIGAL_PATH"
+        fi
+
+        if [ $EXIT_CODE -eq 0 ]; then
+          echo "❌ Script should have failed when Prodigal is missing"
+          exit 1
+        fi
+
+        if grep -q "Prodigal not found in PATH" error_output.txt; then
+          echo "✅ Error handling test passed"
+        else
+          echo "❌ Expected 'Prodigal not found in PATH' message"
+          exit 1
+        fi
+
+    - name: Test version flag
+      shell: bash -l {0}
+      run: |
+        echo "Testing version flag..."
+        python3 CaCo.py -v | grep -q "CaCo 0.2.1a" || exit 1
+        echo "✅ Version flag test passed"
 
     - name: Upload test outputs on failure
       if: failure()
@@ -110,7 +165,7 @@ jobs:
       with:
         name: test-outputs
         path: |
-          allfams.tsv
-          allsubs.tsv
-          carboncomp_output.tsv.xz
+          test_outputs/
+          error_output.txt
           *.tsv
+          *.tsv.xz
