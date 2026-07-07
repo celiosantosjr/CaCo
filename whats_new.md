@@ -1,7 +1,3 @@
-Here is the completely updated "What is New" document. It reflects the dual gene‑prediction backends, the smarter CPU allocation, the move to the current working directory for outputs, and the other critical production‑readiness fixes we just implemented.
-
----
-
 # What is New in the Parallelized CaCo
 
 This document summarizes the major improvements and changes introduced in the new version of CaCo (the parallelized, “lightspeed” version) compared to the original implementation.
