@@ -103,12 +103,15 @@ C. The table with competition scores contains the following columns:
     - set1: number of unique carbon substrates detected in genome 1
     - set2: number of unique carbon substrates detected in genome 2
     - intersection: number of carbon substrates overlapping between genome 1 and 2
-    - competition: the Jaccard distance between sets 1 and 2 normalized by the maximum Jaccard distance possible
+    - competition: the Jaccard distance between sets 1 and 2
+    - relcomp (relative competition): the Jaccard distance between sets 1 and 2 normalized by the maximum Jaccard distance possible
     - prob: Permutation probability calculated with 1,000 simulations of randomly get such intersection, thus competition
     - RPS: Resource Partitioning Score (1 - 2 * competition)
+    - relRPS: Resource Partitioning Score (1 - 2 * relative competition)
 
 Example:
 
-| genome1	| genome2	| set1	| set2	| intersection	| competition	| prob	| RPS |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| TARA_SAMEA2620259_METAG_HFKLHEHB | TARA_SAMN05326651_METAG_RED00102 | 24 | 10 | 5 | 0.4 | 0.372 | 0.172 |
+| genome1	| genome2	| set1	| set2	| intersection	| competition	| relcomp	| prob	| RPS | relRPS |
+| :---: | :---: | :---: | :---: | :---: | :---: |  :---: |  :---: | :---: | :---: |
+| TARA_SAMEA2620259_METAG_HFKLHEHB | TARA_SAMN05326651_METAG_RED00102 | 24 | 10 | 5 | 0.172413793 | 0.413793103 | 0.372 | 0.655172414 | 0.172413793 |
+
