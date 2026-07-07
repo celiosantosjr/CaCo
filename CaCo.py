@@ -247,10 +247,22 @@ def extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir):
 def probability_overlap(n1, n2, k, trials=1000):
     random.seed(42)
     M = 60
+    # Use a hash-based seed that depends on the unordered pair
+    # This ensures the same result regardless of order
+    seed = hash((min(n1, n2), max(n1, n2), k, M))
+    rng = random.Random(seed)
+    
+    a = min(n1, M)
+    b = min(n2, M)
+    
+    # Ensure a <= b for consistent sampling order
+    if a > b:
+        a, b = b, a
+    
     cnt = 0
     for _ in range(trials):
-        s1 = set(random.sample(range(M), min(n1, M)))
-        s2 = set(random.sample(range(M), min(n2, M)))
+        s1 = set(rng.sample(range(M), a))
+        s2 = set(rng.sample(range(M), b))
         if len(s1 & s2) >= k:
             cnt += 1
     return cnt / trials
