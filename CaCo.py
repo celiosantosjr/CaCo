@@ -2,39 +2,39 @@ import os
 import sys
 import json
 import lzma
-import math
 import argparse
 import tempfile
 import shutil
+import subprocess          
+import multiprocessing as mp
 from glob import glob
 from itertools import combinations
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
 
 import pandas as pd
 from tqdm import tqdm
-import pyrodigal  # Fast Prodigal replacement
+import pyrodigal
 
 
-# ---------- Helper functions ----------
+# ---------- Helper: get file path relative to script ----------
 def get_file_path(infile):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(script_dir, infile)
 
 
+# ---------- Download dbCAN HMM database ----------
 def download_db():
-    """Download dbCAN HMM database (unchanged)."""
     ofolder = get_file_path('data/')
     os.makedirs(ofolder, exist_ok=True)
     file_path = f'{ofolder}/dbcan.hmm'
-    from subprocess import run
-    result = run(['wget',
-                  '-O', file_path,
-                  'https://pro.unl.edu/dbCAN2/download_file.php?file=dbCAN-HMMdb-V11.txt'],
-                 capture_output=True, text=True)
+    result = subprocess.run(
+        ['wget', '-O', file_path,
+         'https://pro.unl.edu/dbCAN2/download_file.php?file=dbCAN-HMMdb-V11.txt'],
+        capture_output=True, text=True
+    )
     if result.returncode != 0:
         return f"Download failed: {result.stderr}"
-    # Validate file header and footer (simplified)
+    # Validate header/footer
     try:
         with open(file_path, 'r') as f:
             first = f.readline().strip()
@@ -53,62 +53,56 @@ def download_db():
     return "Download successful"
 
 
-# ---------- Gene prediction with Pyrodigal ----------
-def predict_genes_pyrodigal(infile, outdir, threads=1):
-    """Run Pyrodigal on a single genome; returns output file path."""
+# ---------- Gene prediction with Pyrodigal (parallel) ----------
+def predict_genes_pyrodigal(infile, outdir):
+    """Predict genes from nucleotide genome, return path to .faa."""
     outfile = os.path.join(outdir, os.path.basename(infile).rsplit('.', 1)[0] + '.faa')
-    # Use the Pyrodigal ORF finder
+    if os.path.exists(outfile):
+        return outfile
     with open(infile, 'rb') as f:
-        sequence = f.read()
-    # Train and predict genes (single mode, meta mode can be set via flag)
-    # We keep -p single as in original
-    genes = pyrodigal.GeneFinder(meta=False)  # single genome mode
-    genes.train(sequence)
-    # Write protein sequences in FASTA format
+        seq = f.read()
+    # Single genome mode (set meta=True for metagenomes)
+    genes = pyrodigal.GeneFinder(meta=False)
+    genes.train(seq)
     with open(outfile, 'w') as out:
-        for idx, pred in enumerate(genes.find_genes(sequence), 1):
-            # pred is a Gene object with attributes: start, end, strand, sequence
-            # We need to get the protein sequence; pyrodigal provides .translate()
-            protein = pred.translate()
-            header = f">{os.path.basename(infile)}_gene_{idx}"
-            out.write(f"{header}\n{protein}\n")
+        for idx, pred in enumerate(genes.find_genes(seq), 1):
+            prot = pred.translate()
+            out.write(f">{os.path.basename(infile)}_gene_{idx}\n{prot}\n")
     return outfile
 
 
-# ---------- Parallel HMM search with hmmsearch (using multiprocessing) ----------
+# ---------- HMM search with hmmsearch (parallel) ----------
 def run_hmmsearch(genome_faa, db, outdir, cpu_per_task=2):
-    """Run hmmsearch on one FASTA file and return path to domtblout."""
     outfile = os.path.join(outdir, os.path.basename(genome_faa).replace('.faa', '.dbcan'))
     if os.path.exists(outfile):
-        return outfile  # already done
-    from subprocess import run
-    cmd = ['hmmsearch',
-           '--cpu', str(cpu_per_task),
-           '-o', '/dev/null',
-           '--domtblout', outfile,
-           db, genome_faa]
-    run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return outfile
+    cmd = [
+        'hmmsearch',
+        '--cpu', str(cpu_per_task),
+        '-o', '/dev/null',
+        '--domtblout', outfile,
+        db, genome_faa
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return outfile
 
 
 def parallel_hmmsearch(faa_files, db, outdir, num_workers, cpu_per_task=2):
-    """Launch hmmsearch for all FASTA files in parallel."""
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(run_hmmsearch, faa, db, outdir, cpu_per_task): faa
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = {ex.submit(run_hmmsearch, faa, db, outdir, cpu_per_task): faa
                    for faa in faa_files}
         results = []
-        for future in tqdm(as_completed(futures), total=len(futures),
-                           desc="HMM search"):
-            results.append(future.result())
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="HMM search"):
+            results.append(fut.result())
     return results
 
 
 # ---------- Parse hmmsearch output (parallel) ----------
 def parse_hmmsearch_output(infile, outdir):
-    """Process a single .dbcan file and write parsed .parsed file."""
     parsed_file = f'{infile}.parsed'
     if os.path.exists(parsed_file):
         return parsed_file
+
     min_score = 25
     min_coverage = 0.35
     max_evalue = 1e-15
@@ -123,37 +117,35 @@ def parse_hmmsearch_output(infile, outdir):
             fields = line.strip().split()
             if len(fields) < 18:
                 continue
-            query_name = fields[0]
-            hit_name = fields[3].split('.')[0]
-            hit_evalue = float(fields[6])
-            hit_score = float(fields[7])
-            hit_start = int(fields[15])
-            hit_end = int(fields[16])
-            query_len = int(fields[2])
-            coverage = min(1.0, (hit_end - hit_start + 1) / query_len)
+            qname = fields[0]
+            hname = fields[3].split('.')[0]
+            evalue = float(fields[6])
+            score = float(fields[7])
+            hstart = int(fields[15])
+            hend = int(fields[16])
+            qlen = int(fields[2])
+            cov = min(1.0, (hend - hstart + 1) / qlen)
 
-            if query_name != current_query:
+            if qname != current_query:
                 if current_query is not None and current_best is not None:
                     if (current_best[5] >= min_coverage and
                         current_best[1] <= max_evalue and
                         current_best[2] >= min_score):
                         best_hits[current_query] = current_best
-                current_query = query_name
+                current_query = qname
                 current_best = None
 
-            if (current_best is None or hit_score > current_best[2] or
-                (hit_score == current_best[2] and hit_evalue < current_best[1]) or
-                (hit_score == current_best[2] and hit_evalue == current_best[1] and coverage > current_best[5])):
-                current_best = (hit_name, hit_evalue, hit_score, hit_start, hit_end, coverage)
+            if (current_best is None or score > current_best[2] or
+                (score == current_best[2] and evalue < current_best[1]) or
+                (score == current_best[2] and evalue == current_best[1] and cov > current_best[5])):
+                current_best = (hname, evalue, score, hstart, hend, cov)
 
-    # Last query
     if current_query is not None and current_best is not None:
         if (current_best[5] >= min_coverage and
             current_best[1] <= max_evalue and
             current_best[2] >= min_score):
             best_hits[current_query] = current_best
 
-    # Write to parsed file
     df = pd.DataFrame.from_dict(best_hits, orient='index',
                                 columns=['Hit_Name','Hit_Evalue','Hit_Score',
                                          'Hit_Start','Hit_End','Hit_Coverage'])
@@ -162,57 +154,43 @@ def parse_hmmsearch_output(infile, outdir):
 
 
 def parallel_parse(dbcan_files, outdir, num_workers):
-    """Parse all .dbcan files in parallel."""
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(parse_hmmsearch_output, f, outdir): f
-                   for f in dbcan_files}
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = {ex.submit(parse_hmmsearch_output, f, outdir): f for f in dbcan_files}
         results = []
-        for future in tqdm(as_completed(futures), total=len(futures),
-                           desc="Parsing HMM output"):
-            results.append(future.result())
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Parsing HMM"):
+            results.append(fut.result())
     return results
 
 
 # ---------- Feature extraction (parallel) ----------
-def extract_features_for_one(parsed_file, subs_dict):
-    """Extract families and substrates from one parsed file."""
+def extract_features_one(parsed_file, subs_dict):
     name = os.path.basename(parsed_file).replace('.dbcan.parsed', '')
     df = pd.read_table(parsed_file)
     families = set(df.Hit_Name)
-    families = {x.split('_')[0] for x in families}   # family IDs
+    families = {x.split('_')[0] for x in families}
     sorted_fam = sorted(families)
-    # substrates
     subs_set = set()
     for fam in families:
         if fam in subs_dict:
             subs_set.update(subs_dict[fam].split(', '))
     sorted_subs = sorted(subs_set)
-    return (name, sorted_fam, sorted_subs)
+    return name, sorted_fam, sorted_subs
 
 
 def extract_features_parallel(parsed_files, subs_dict, num_workers):
-    """Extract features from all parsed files in parallel, returning two DataFrames."""
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(extract_features_for_one, pf, subs_dict): pf
-                   for pf in parsed_files}
-        results = []
-        for future in tqdm(as_completed(futures), total=len(futures),
-                           desc="Extracting features"):
-            results.append(future.result())
-    # Build DataFrames
-    fam_records = []
-    sub_records = []
-    for name, fams, subs in results:
-        fam_records.append({'genome': name, 'families': ', '.join(fams)})
-        sub_records.append({'genome': name, 'substrates': ', '.join(subs)})
-    df_fam = pd.DataFrame(fam_records)
-    df_sub = pd.DataFrame(sub_records)
-    return df_fam, df_sub
+    with ProcessPoolExecutor(max_workers=num_workers) as ex:
+        futures = {ex.submit(extract_features_one, pf, subs_dict): pf for pf in parsed_files}
+        fam_records = []
+        sub_records = []
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="Extracting features"):
+            name, fams, subs = fut.result()
+            fam_records.append({'genome': name, 'families': ', '.join(fams)})
+            sub_records.append({'genome': name, 'substrates': ', '.join(subs)})
+    return pd.DataFrame(fam_records), pd.DataFrame(sub_records)
 
 
-# ---------- RPS calculation (parallel pairwise) ----------
+# ---------- Probability overlap ----------
 def probability_overlap(n1, n2, k, trials=1000):
-    """Empirical probability of overlap >= k under random sampling."""
     import random
     random.seed(42)
     M = 60
@@ -226,13 +204,12 @@ def probability_overlap(n1, n2, k, trials=1000):
 
 
 def probcomp(m, n, k):
-    """Compute competition and RPS for two sets."""
     if (m+n) <= k or (m==0 and n==0):
-        return (0, 0, 1.0)
+        return 0, 0, 1.0
     if m==0 or n==0:
-        return (0, 0, 1.0)
+        return 0, 0, 1.0
     if not (m >= k and n >= k):
-        return ('n.a.', 'n.a.', 'n.a.')
+        return 'n.a.', 'n.a.', 'n.a.'
     maxcomp = min(m,n) / (m+n-min(m,n))
     comp = k/(m+n-k)
     relcomp = comp / maxcomp if maxcomp != 0 else 0
@@ -240,116 +217,46 @@ def probcomp(m, n, k):
     return comp, relcomp, prob
 
 
-def compute_rps_pair(args):
-    """Worker function for one pair (genome1, genome2, df_sub)."""
-    idx, (g1, g2, df_sub) = args
-    row1 = df_sub[df_sub.genome == g1]
-    row2 = df_sub[df_sub.genome == g2]
-    if row1.empty or row2.empty:
-        return None
-    set1 = set(row1.iloc[0]['substrates'].split(', '))
-    set2 = set(row2.iloc[0]['substrates'].split(', '))
-    intersect = len(set1 & set2)
-    m, n = len(set1), len(set2)
-    competition, relcomp, prob = probcomp(m, n, intersect)
-    if isinstance(competition, str):
-        return None
-    RPS = 1 - 2 * competition
-    relRPS = 1 - 2 * relcomp
-    return (g1, g2, m, n, intersect, competition, relcomp, prob, RPS, relRPS)
+# ---------- Pairwise RPS (parallel with chunking) ----------
+def compute_rps_chunk(pair_chunk, df_sub, temp_dir):
+    """Process a list of pairs and write results to a temp file."""
+    temp_out = os.path.join(temp_dir, f"rps_{os.getpid()}.tsv")
+    with open(temp_out, 'w') as f:
+        f.write("genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n")
+        for g1, g2 in pair_chunk:
+            row1 = df_sub[df_sub.genome == g1]
+            row2 = df_sub[df_sub.genome == g2]
+            if row1.empty or row2.empty:
+                continue
+            set1 = set(row1.iloc[0]['substrates'].split(', '))
+            set2 = set(row2.iloc[0]['substrates'].split(', '))
+            intersect = len(set1 & set2)
+            m, n = len(set1), len(set2)
+            competition, relcomp, prob = probcomp(m, n, intersect)
+            if isinstance(competition, str):
+                continue
+            RPS = 1 - 2 * competition
+            relRPS = 1 - 2 * relcomp
+            f.write(f"{g1}\t{g2}\t{m}\t{n}\t{intersect}\t{competition}\t{relcomp}\t{prob}\t{RPS}\t{relRPS}\n")
+    return temp_out
 
 
 def compute_rps_parallel(df_sub, num_workers, output_file):
-    """Compute RPS for all genome pairs in parallel, writing to output."""
     genomes = df_sub['genome'].tolist()
     pairs = list(combinations(genomes, 2))
     if not pairs:
         return
 
-    # Prepare arguments for workers: we pass each pair and the whole df
-    # But df is large; better to pass indices? To avoid pickling large df repeatedly,
-    # we can create a list of args with (g1, g2, df_sub) but that copies df each time.
-    # We'll use a shared memory approach? Simpler: pass the entire df to each worker via
-    # initializer? We can use multiprocessing.Pool with initializer to share df.
-    # But ProcessPoolExecutor doesn't support initializer easily. Use multiprocessing.Pool.
-    # We'll create a Pool with initializer to set global df_sub.
-    # However, to simplify, we'll just pass df_sub as a global variable.
-    # We'll define a global variable and use Pool.
-
-    # We'll use multiprocessing.Pool with initializer.
-    manager = mp.Manager()
-    # Create a shared dict? Actually we can just rely on copy-on-write? For large df, copy may be heavy.
-    # Better: use a global variable in the worker function (defined at module level).
-    # We'll set a global variable before calling pool.
-
-    # To avoid pickling, we can define a worker that reads df from a global.
-    # We'll set a global variable _DF_SUB in the main process, and then use Pool with initializer to set it in each worker.
-    # But multiprocessing.Pool initializer cannot easily set global in child; we can use a function that sets it.
-    # Simpler: just pass the df as argument; it will be pickled once per worker? Actually it will be pickled for each call.
-    # That's inefficient. Better: use a shared memory via Manager.dict? Not needed.
-
-    # Given the number of pairs may be large, we can chunk them and write per worker to temp files.
-    # We'll create a Pool with a custom initializer to load df_sub from a global variable.
-    # We'll define a global variable DF_SUB and set it before pool creation.
-
-    # We'll set a global variable in the main module.
-    global DF_SUB
-    DF_SUB = df_sub  # noqa
-
-    def worker(pair):
-        g1, g2 = pair
-        row1 = DF_SUB[DF_SUB.genome == g1]
-        row2 = DF_SUB[DF_SUB.genome == g2]
-        if row1.empty or row2.empty:
-            return None
-        set1 = set(row1.iloc[0]['substrates'].split(', '))
-        set2 = set(row2.iloc[0]['substrates'].split(', '))
-        intersect = len(set1 & set2)
-        m, n = len(set1), len(set2)
-        competition, relcomp, prob = probcomp(m, n, intersect)
-        if isinstance(competition, str):
-            return None
-        RPS = 1 - 2 * competition
-        relRPS = 1 - 2 * relcomp
-        return (g1, g2, m, n, intersect, competition, relcomp, prob, RPS, relRPS)
-
-    # Chunk pairs to write to separate temp files to avoid locking
     chunk_size = max(1, len(pairs) // num_workers)
     chunks = [pairs[i:i+chunk_size] for i in range(0, len(pairs), chunk_size)]
 
-    # We'll use a pool to process each chunk in a worker, and that worker writes to its own temp file.
-    def process_chunk(chunk, temp_dir):
-        """Process a list of pairs and write results to a temp file."""
-        temp_out = os.path.join(temp_dir, f"rps_{os.getpid()}.tsv")
-        with open(temp_out, 'w') as f:
-            # Write header
-            f.write("genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n")
-            for g1, g2 in chunk:
-                row1 = DF_SUB[DF_SUB.genome == g1]
-                row2 = DF_SUB[DF_SUB.genome == g2]
-                if row1.empty or row2.empty:
-                    continue
-                set1 = set(row1.iloc[0]['substrates'].split(', '))
-                set2 = set(row2.iloc[0]['substrates'].split(', '))
-                intersect = len(set1 & set2)
-                m, n = len(set1), len(set2)
-                competition, relcomp, prob = probcomp(m, n, intersect)
-                if isinstance(competition, str):
-                    continue
-                RPS = 1 - 2 * competition
-                relRPS = 1 - 2 * relcomp
-                f.write(f"{g1}\t{g2}\t{m}\t{n}\t{intersect}\t{competition}\t{relcomp}\t{prob}\t{RPS}\t{relRPS}\n")
-        return temp_out
-
-    # Create a temporary directory for chunk results
     temp_dir = tempfile.mkdtemp(prefix="rps_chunks_")
     try:
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = [executor.submit(process_chunk, chunk, temp_dir) for chunk in chunks]
+        with ProcessPoolExecutor(max_workers=num_workers) as ex:
+            futures = [ex.submit(compute_rps_chunk, ch, df_sub, temp_dir) for ch in chunks]
             temp_files = []
-            for future in tqdm(as_completed(futures), total=len(futures),
-                               desc="Computing RPS pairs"):
-                temp_files.append(future.result())
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Computing RPS"):
+                temp_files.append(fut.result())
 
         # Merge all temp files into final compressed output
         with lzma.open(output_file, 'wt') as out_f:
@@ -357,65 +264,56 @@ def compute_rps_parallel(df_sub, num_workers, output_file):
             for tf in temp_files:
                 with open(tf, 'r') as inf:
                     if not header_written:
-                        # Write header once
-                        header = inf.readline()
-                        out_f.write(header)
+                        out_f.write(inf.readline())
                         header_written = True
                     else:
-                        # Skip header in subsequent files
-                        inf.readline()
-                    # Write data
+                        inf.readline()  # skip header
                     for line in inf:
                         out_f.write(line)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-# ---------- Main workflow ----------
+# ---------- Main orchestration ----------
 def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers):
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Step 1: Gene prediction if needed
+    # 1. Gene prediction (if nucleotides)
     if mode == 'from_nucleotides':
-        print("Gene prediction using Pyrodigal (parallel)...")
+        print("Gene prediction with Pyrodigal (parallel)...")
         faa_files = []
-        # We can parallelize gene prediction too
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(predict_genes_pyrodigal, g, temp_dir): g
-                       for g in genomes_list}
-            for future in tqdm(as_completed(futures), total=len(futures),
-                               desc="Gene prediction"):
-                faa_files.append(future.result())
+        with ProcessPoolExecutor(max_workers=num_workers) as ex:
+            futures = {ex.submit(predict_genes_pyrodigal, g, temp_dir): g for g in genomes_list}
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Gene prediction"):
+                faa_files.append(fut.result())
     else:
-        # mode == 'from_proteins' – assume genomes_list are already .faa files
         faa_files = [g for g in genomes_list if os.path.exists(g)]
 
     if not faa_files:
         print("No input files found. Exiting.")
         return
 
-    # Step 2: HMM search (parallel)
+    # 2. HMM search
     print("Running hmmsearch in parallel...")
-    dbcan_files = parallel_hmmsearch(faa_files, db, temp_dir, num_workers,
-                                     cpu_per_task=2)  # each hmmsearch uses 2 threads
+    dbcan_files = parallel_hmmsearch(faa_files, db, temp_dir, num_workers, cpu_per_task=2)
 
-    # Step 3: Parse hmmsearch output (parallel)
-    print("Parsing hmmsearch output in parallel...")
+    # 3. Parse HMM output
+    print("Parsing hmmsearch output...")
     parsed_files = parallel_parse(dbcan_files, temp_dir, num_workers)
 
-    # Step 4: Extract features (parallel)
+    # 4. Extract features
     print("Extracting features...")
     df_fam, df_sub = extract_features_parallel(parsed_files, subs_dict, num_workers)
 
-    # Write feature files (optional)
+    # Optional: save intermediate files
     df_fam.to_csv(os.path.join(temp_dir, 'allfams.tsv'), sep='\t', index=False)
     df_sub.to_csv(os.path.join(temp_dir, 'allsubs.tsv'), sep='\t', index=False)
 
-    # Step 5: Compute RPS pairwise (parallel with chunking)
-    print("Computing RPS for all pairs (parallel)...")
+    # 5. Compute pairwise RPS
+    print("Computing pairwise RPS (parallel)...")
     compute_rps_parallel(df_sub, num_workers, output_file)
 
-    # Cleanup temp if not needed (optional)
+    # Cleanup (optional – uncomment if you want to delete temp)
     # shutil.rmtree(temp_dir, ignore_errors=True)
     print("Done.")
 
@@ -440,7 +338,7 @@ if __name__ == '__main__':
         print(download_db())
         sys.exit(0)
 
-    # Determine list of genomes
+    # Determine genome list
     if args.gl:
         with open(args.gl, 'r') as f:
             genomes = [line.strip() for line in f if line.strip()]
@@ -451,16 +349,9 @@ if __name__ == '__main__':
             print("Error: Provide either -gl or both -g1 and -g2")
             sys.exit(1)
 
-    # Set paths
-    if args.db is None:
-        db = get_file_path('data/dbcan.hmm')
-    else:
-        db = args.db
-    if args.subs is None:
-        subs = get_file_path('data/substrate_key.json')
-    else:
-        subs = args.subs
-
+    # Resolve database and substrate files
+    db = args.db if args.db else get_file_path('data/dbcan.hmm')
+    subs = args.subs if args.subs else get_file_path('data/substrate_key.json')
     with open(subs, 'r') as f:
         subs_dict = json.load(f)
 
