@@ -373,6 +373,7 @@ def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers, 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="CaCo parallel: Carbon source competition prediction.")
+    parser.add_argument("-v", "--version", action="version", version=f"CaCo {__version__}")
     parser.add_argument("-m", type=str, default='from_proteins',
                         choices=['download', 'from_proteins', 'from_nucleotides'],
                         help="Mode: download, from_proteins, or from_nucleotides")
@@ -387,7 +388,6 @@ if __name__ == '__main__':
                         help="Number of CPU cores to use (default: all)")
     parser.add_argument("--use-pyrodigal", action="store_true",
                         help="Use Pyrodigal for gene prediction (faster, but slightly different from the original PNAS code). If not set, uses Prodigal (subprocess) for exact reproducibility.")
-    parser.add_argument("-v", "--version", action="version", version=f"CaCo {__version__}")
     args = parser.parse_args()
 
     if args.m == 'download':
