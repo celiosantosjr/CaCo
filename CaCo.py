@@ -16,7 +16,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 from tqdm import tqdm
-import pyrodigal
+try:
+    import pyrodigal
+except ImportError:
+    pyrodigal = None
 
 
 # ---------- Version ------------------------------------------------
@@ -73,6 +76,8 @@ def predict_genes_prodigal(infile, outdir):
 
 def predict_genes_pyrodigal(infile, outdir):
     """Fast Python binding – may produce slightly different calls."""
+    if pyrodigal is None:
+        raise RuntimeError("Pyrodigal is required for --use-pyrodigal. Install it or omit that option.")
     outfile = os.path.join(outdir, os.path.basename(infile).rsplit('.', 1)[0] + '.faa')
     if os.path.exists(outfile):
         return outfile
@@ -216,6 +221,62 @@ def extract_features_one(parsed_file, subs_dict):
     return name, sorted_fam, sorted_subs
 
 
+def matrix_to_feature_tables(matrix_file, output_dir, id_column=None):
+    """Read a genome-by-annotation table and convert positive values to presence/absence.
+
+    The input may be tab-delimited or comma-separated. The first column is used as
+    the genome identifier by default; use id_column to select a named identifier
+    column. Every remaining column is treated as an annotation/substrate feature.
+    Values greater than zero are converted to 1, while zero, missing, and nonnumeric
+    values are converted to 0. The resulting substrate lists are compatible with
+    the existing pairwise RPS calculation.
+    """
+    if not os.path.isfile(matrix_file):
+        raise FileNotFoundError(f"Matrix file not found: {matrix_file}")
+
+    try:
+        df = pd.read_csv(matrix_file, sep=None, engine='python')
+    except Exception as e:
+        raise ValueError(f"Could not read matrix as CSV/TSV: {e}") from e
+
+    if df.empty or df.shape[1] < 2:
+        raise ValueError("The matrix must contain an identifier column and at least one annotation column.")
+
+    if id_column is None:
+        id_column = df.columns[0]
+    if id_column not in df.columns:
+        raise ValueError(f"Identifier column '{id_column}' was not found. Available columns: {list(df.columns)}")
+
+    if df[id_column].isna().any() or (df[id_column].astype(str).str.strip() == '').any():
+        raise ValueError(f"Identifier column '{id_column}' contains missing or empty genome identifiers.")
+    if df[id_column].duplicated().any():
+        duplicates = df.loc[df[id_column].duplicated(), id_column].astype(str).tolist()
+        raise ValueError(f"Genome identifiers must be unique; duplicated values include: {duplicates[:5]}")
+
+    feature_columns = [c for c in df.columns if c != id_column]
+    numeric = df[feature_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
+    binary = (numeric > 0).astype('uint8')
+
+    records = []
+    for genome, row in zip(df[id_column].astype(str), binary.itertuples(index=False, name=None)):
+        present = [feature for feature, value in zip(feature_columns, row) if value == 1]
+        records.append({
+            'genome': genome,
+            'families': ', '.join(present),
+            'substrates': ', '.join(present)
+        })
+
+    fam_path = os.path.join(output_dir, 'allfams.tsv')
+    sub_path = os.path.join(output_dir, 'allsubs.tsv')
+    pd.DataFrame([{'genome': r['genome'], 'families': r['families']} for r in records]).to_csv(
+        fam_path, sep='\t', index=False
+    )
+    pd.DataFrame([{'genome': r['genome'], 'substrates': r['substrates']} for r in records]).to_csv(
+        sub_path, sep='\t', index=False
+    )
+    return fam_path, sub_path
+
+
 def extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir):
     """
     Extract features in parallel and write results to disk.
@@ -283,8 +344,8 @@ def probcomp(m, n, k):
 
 
 # ---------- Pairwise RPS (parallel with chunking) ----------
-def compute_rps_chunk(pair_chunk, df_sub, temp_dir):
-    temp_out = os.path.join(temp_dir, f"rps_{os.getpid()}.tsv")
+def compute_rps_chunk(pair_chunk, df_sub, temp_dir, chunk_id):
+    temp_out = os.path.join(temp_dir, f"rps_{os.getpid()}_{chunk_id}.tsv")
     with open(temp_out, 'w') as f:
         f.write("genome1\tgenome2\tset1\tset2\tintersection\tcompetition\trelcomp\tprob\tRPS\trelRPS\n")
         for g1, g2 in pair_chunk:
@@ -295,8 +356,10 @@ def compute_rps_chunk(pair_chunk, df_sub, temp_dir):
             row2 = df_sub[df_sub.genome == g2]
             if row1.empty or row2.empty:
                 continue
-            set1 = set(row1.iloc[0]['substrates'].split(', '))
-            set2 = set(row2.iloc[0]['substrates'].split(', '))
+            substrate_text1 = row1.iloc[0]['substrates']
+            substrate_text2 = row2.iloc[0]['substrates']
+            set1 = set() if pd.isna(substrate_text1) or not str(substrate_text1) else set(str(substrate_text1).split(', '))
+            set2 = set() if pd.isna(substrate_text2) or not str(substrate_text2) else set(str(substrate_text2).split(', '))
             intersect = len(set1 & set2)
             m, n = len(set1), len(set2)
             competition, relcomp, prob = probcomp(m, n, intersect)
@@ -320,7 +383,8 @@ def compute_rps_parallel(df_sub, num_workers, output_file):
     temp_dir = tempfile.mkdtemp(prefix="rps_chunks_")
     try:
         with ProcessPoolExecutor(max_workers=num_workers) as ex:
-            futures = [ex.submit(compute_rps_chunk, ch, df_sub, temp_dir) for ch in chunks]
+            futures = [ex.submit(compute_rps_chunk, ch, df_sub, temp_dir, chunk_id)
+                       for chunk_id, ch in enumerate(chunks)]
             temp_files = []
             for fut in tqdm(as_completed(futures), total=len(futures), desc="Computing RPS"):
                 temp_files.append(fut.result())
@@ -342,33 +406,41 @@ def compute_rps_parallel(df_sub, num_workers, output_file):
 
 
 # ---------- Main orchestration ----------
-def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers, use_pyrodigal):
+def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers, use_pyrodigal,
+         matrix_file=None, matrix_id_column=None):
     # Determine output directory: all final outputs go to current working directory
     output_dir = os.getcwd()
     os.makedirs(temp_dir, exist_ok=True)
 
+    # Matrix mode: annotations are treated as substrate features after binarization.
+    if mode == 'from_matrix':
+        print("Reading annotation matrix and converting positive values to binary presence...")
+        fam_path, sub_path = matrix_to_feature_tables(matrix_file, output_dir, matrix_id_column)
     # 1. Gene prediction (if nucleotides)
-    if mode == 'from_nucleotides':
+    elif mode == 'from_nucleotides':
         print("Gene prediction...")
         faa_files = predict_genes_parallel(genomes_list, temp_dir, num_workers, use_pyrodigal)
     else:
         faa_files = [g for g in genomes_list if os.path.exists(g)]
 
-    if not faa_files:
+    if mode != 'from_matrix' and not faa_files:
         print("No input files found. Exiting.")
         return
 
-    # 2. HMM search (with dynamic CPU allocation to avoid oversubscription)
-    print("Running hmmsearch in parallel...")
-    dbcan_files = parallel_hmmsearch(faa_files, db, temp_dir, num_workers)
+    if mode == 'from_matrix':
+        print(f"Reading substrate table: {sub_path}")
+    else:
+        # 2. HMM search (with dynamic CPU allocation to avoid oversubscription)
+        print("Running hmmsearch in parallel...")
+        dbcan_files = parallel_hmmsearch(faa_files, db, temp_dir, num_workers)
 
-    # 3. Parse HMM output
-    print("Parsing hmmsearch output...")
-    parsed_files = parallel_parse(dbcan_files, temp_dir, num_workers)
+        # 3. Parse HMM output
+        print("Parsing hmmsearch output...")
+        parsed_files = parallel_parse(dbcan_files, temp_dir, num_workers)
 
-    # 4. Extract features (write to output_dir)
-    print("Extracting features...")
-    fam_path, sub_path = extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir)
+        # 4. Extract features (write to output_dir)
+        print("Extracting features...")
+        fam_path, sub_path = extract_features_parallel(parsed_files, subs_dict, num_workers, output_dir)
 
     # 5. Read the substrate table for RPS computation
     df_sub = pd.read_table(sub_path)
@@ -385,14 +457,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="CaCo parallel: Carbon source competition prediction.")
     parser.add_argument("-v", "--version", action="version", version=f"CaCo {__version__}")
     parser.add_argument("-m", type=str, default='from_proteins',
-                        choices=['download', 'from_proteins', 'from_nucleotides'],
-                        help="Mode: download, from_proteins, or from_nucleotides")
+                        choices=['download', 'from_proteins', 'from_nucleotides', 'from_matrix'],
+                        help="Mode: download, from_proteins, from_nucleotides, or from_matrix")
     parser.add_argument("-db", type=str, default=None, help="Path to dbCAN HMM database")
     parser.add_argument("-subs", type=str, default=None, help="Path to substrate key JSON")
     parser.add_argument("-tmp", type=str, default='tmp/', help="Temporary directory")
     parser.add_argument("-g1", type=str, help="Genome file 1 (or list file with -gl)")
     parser.add_argument("-g2", type=str, help="Genome file 2")
     parser.add_argument("-gl", type=str, default=None, help="File with list of genome paths")
+    parser.add_argument("-matrix", type=str, default=None,
+                        help="Genome-by-annotation CSV/TSV table for from_matrix mode")
+    parser.add_argument("--matrix-id-column", type=str, default=None,
+                        help="Column containing genome identifiers; defaults to the first column")
     parser.add_argument("-o", type=str, default='carboncomp_output.tsv.xz', help="Output file name (placed in current directory)")
     parser.add_argument("-cpus", type=int, default=mp.cpu_count(),
                         help="Number of CPU cores to use (default: all)")
@@ -404,8 +480,13 @@ if __name__ == '__main__':
         print(download_db())
         sys.exit(0)
 
-    # Determine genome list
-    if args.gl:
+    if args.m == 'from_matrix':
+        if not args.matrix:
+            print("Error: -matrix is required when using -m from_matrix")
+            sys.exit(1)
+        genomes = []
+    # Determine genome list for FASTA/protein modes
+    elif args.gl:
         with open(args.gl, 'r') as f:
             genomes = [line.strip() for line in f if line.strip()]
     else:
@@ -415,13 +496,19 @@ if __name__ == '__main__':
             print("Error: Provide either -gl or both -g1 and -g2")
             sys.exit(1)
 
-    # Resolve database and substrate files
-    db = args.db if args.db else get_data_path('data/dbcan.hmm')
-    subs = args.subs if args.subs else get_data_path('data/substrate_key.json')
-    with open(subs, 'r') as f:
-        subs_dict = json.load(f)
+    # Resolve database and substrate files. Matrix mode does not need either file.
+    if args.m == 'from_matrix':
+        db = None
+        subs_dict = {}
+    else:
+        db = args.db if args.db else get_data_path('data/dbcan.hmm')
+        subs = args.subs if args.subs else get_data_path('data/substrate_key.json')
+        with open(subs, 'r') as f:
+            subs_dict = json.load(f)
 
-    if args.use_pyrodigal:
+    if args.m == 'from_matrix':
+        print("Using matrix mode: all positive annotation values will be treated as present.")
+    elif args.use_pyrodigal:
         print("Using Pyrodigal for gene prediction (fast). Note: results may differ slightly from the original paper.")
     else:
         print("Using Prodigal (subprocess) for exact reproducibility with the PNAS paper.")
@@ -433,4 +520,6 @@ if __name__ == '__main__':
          db=db,
          subs_dict=subs_dict,
          num_workers=args.cpus,
-         use_pyrodigal=args.use_pyrodigal)
+         use_pyrodigal=args.use_pyrodigal,
+         matrix_file=args.matrix,
+         matrix_id_column=args.matrix_id_column)
