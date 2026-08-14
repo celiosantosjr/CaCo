@@ -72,38 +72,27 @@ CaCo supports the following modes:
 | :--- | :--- | :--- |
 | `from_nucleotides` | Complete nucleotide genome or contig FASTA files | Gene prediction, dbCAN HMM search, substrate mapping, and RPS calculation |
 | `from_proteins` | Predicted protein FASTA files | dbCAN HMM search, substrate mapping, and RPS calculation |
-| `from_matrix` | Genome-by-annotation CSV or TSV table | Positive-value binarization, feature-set construction, and RPS calculation |
+| `from_matrix` | Genome-by-feature CSV or TSV table with protein-family or substrate columns | Positive-value binarization, optional protein-family-to-substrate mapping, and RPS calculation |
 | `download` | No biological input | Downloads the dbCAN HMM database used by FASTA workflows |
 
 > **Important for FASTA modes:** Provide complete contigs/genomes or predicted protein FASTA files. Do not provide raw individual gene sequences unless they are intentionally being treated as a complete input dataset.
 
-> **Important for matrix mode:** The first column is interpreted as the genome identifier by default. Every other column is interpreted as an annotation or resource feature.
+> **Important for matrix mode:** The first column is interpreted as the genome identifier by default. Every other column must be either a protein family or a substrate, as declared with `--matrix-type`. A table containing a list of substrates in one column is not the expected input format; features must be represented as columns.
 
 ---
 
 ## Matrix input mode
 
-Matrix mode accepts a rectangular CSV or TSV table in which rows represent genomes and columns represent annotations, substrates, or other resource features. The table must contain one identifier column and at least one feature column.
+Matrix mode accepts a rectangular CSV or TSV table in which rows represent genomes and columns represent either **protein families** or **substrates**. The table must contain one genome identifier column and at least one feature column. A list-valued `substrates` column is not the input format for this mode.
 
-A valid input may contain binary values:
+The input type must be declared explicitly with `--matrix-type`:
 
-```text
-genome\tacetate\tglucose\txylose
-G1\t1\t0\t1
-G2\t1\t1\t0
-G3\t0\t0\t0
-```
+| Matrix type | Meaning of feature columns | Processing before RPS |
+| :--- | :--- | :--- |
+| `protein_families` | dbCAN/CAZy family identifiers such as `GH18`, `GH73`, `CE4`, or `AA1` | Positive family entries are binarized, then present families are mapped to substrates using `data/substrate_key.json`. |
+| `substrates` | Substrate/resource names such as `chitin`, `peptidoglycan`, or `lignin` | Positive substrate entries are binarized and used directly as substrate presence features. |
 
-It may also contain counts or other nonnegative numeric values:
-
-```text
-genome\tacetate\tglucose\txylose
-G1\t12\t0\t3
-G2\t1\t8\t0
-G3\t0\t0\t0
-```
-
-CaCo converts the table to binary presence/absence using the following rule:
+Both binary values and counts are accepted. CaCo applies the following conversion before calculating RPS:
 
 | Input value | Converted state |
 | :--- | :--- |
@@ -111,24 +100,53 @@ CaCo converts the table to binary presence/absence using the following rule:
 | Equal to zero | Absent, represented as `0` |
 | Missing or nonnumeric | Absent, represented as `0` |
 
-Counts are therefore used only to determine whether a feature is present. Their magnitude is not retained in the current RPS calculation. For example, values of `1`, `10`, and `1,000` all represent the same feature state: present.
+Counts are used only to determine presence. Their magnitude is not retained, so values of `1`, `10`, and `1,000` all represent the same present feature. In protein-family mode, multiple present families that map to the same substrate are collapsed into one substrate before the pairwise calculation.
 
-The feature column names become the feature names used in the pairwise overlap calculation. If the columns are raw enzyme families rather than carbon substrates, they are treated as the features supplied by the user; CaCo does not apply the dbCAN substrate mapping in matrix mode.
+### Protein-family matrix example
 
-### Matrix mode example
+```text
+genome\tGH18\tGH73\tCE4\tAA1
+G1\t2\t0\t1\t0
+G2\t1\t3\t0\t1
+G3\t0\t0\t0\t0
+```
+
+In this example, `GH18` maps to host glycan, peptidoglycan, and chitin; `GH73` maps to peptidoglycan; `CE4` maps to xylan, peptidoglycan, and chitin; and `AA1` maps to lignin according to `data/substrate_key.json`. The resulting substrate sets are therefore derived from the mapping rather than from the protein-family names themselves.
+
+Run it with:
 
 ```bash
 python3 CaCo.py \
   -m from_matrix \
-  -matrix genome_annotations.tsv \
+  -matrix tests/example/protein_family_matrix.tsv \
+  --matrix-type protein_families \
   --matrix-id-column genome \
   -o carboncomp_output.tsv.xz \
   -cpus 8
 ```
 
-The `--matrix-id-column` option is optional. If omitted, CaCo uses the first column as the genome identifier. CSV and TSV delimiters are detected automatically.
+### Substrate matrix example
 
-Matrix mode bypasses gene prediction, HMM search, and substrate-key loading. Consequently, `-db`, `-subs`, `-g1`, `-g2`, and `-gl` are not needed for this mode.
+```text
+genome\tchitin\tpeptidoglycan\tlignin
+G1\t2\t0\t1
+G2\t1\t3\t0
+G3\t0\t0\t0
+```
+
+Run it with:
+
+```bash
+python3 CaCo.py \
+  -m from_matrix \
+  -matrix tests/example/substrate_matrix.tsv \
+  --matrix-type substrates \
+  --matrix-id-column genome \
+  -o carboncomp_output.tsv.xz \
+  -cpus 8
+```
+
+The `--matrix-id-column` option is optional. If omitted, CaCo uses the first column as the genome identifier. CSV and TSV delimiters are detected automatically. Matrix mode bypasses gene prediction and HMM search, but protein-family mode loads the substrate mapping from `data/substrate_key.json` unless a custom file is supplied with `-subs`.
 
 ---
 
@@ -184,7 +202,8 @@ python3 CaCo.py \
 | `-m` | Analysis mode: `download`, `from_proteins`, `from_nucleotides`, or `from_matrix`. |
 | `-g1`, `-g2` | Paths to two genome or protein files for pairwise FASTA analysis. |
 | `-gl` | File containing a list of genome or protein paths for all-versus-all FASTA analysis. |
-| `-matrix` | Path to a genome-by-annotation CSV or TSV table. Required when `-m from_matrix` is selected. |
+| `-matrix` | Path to a genome-by-feature CSV or TSV table. Required when `-m from_matrix` is selected. |
+| `--matrix-type` | Required for matrix mode. Select `protein_families` to map feature columns through the substrate key, or `substrates` to use substrate columns directly. |
 | `--matrix-id-column` | Name of the column containing genome identifiers. Defaults to the first column. |
 | `-o` | Output file name. Default: `carboncomp_output.tsv.xz`. The output is written to the current working directory unless an absolute path is supplied. |
 | `-tmp` | Temporary directory for FASTA-mode intermediate files. Default: `tmp/`. |
@@ -201,8 +220,8 @@ All final output files are written to the current working directory, meaning the
 
 | File | Description |
 | :--- | :--- |
-| `allfams.tsv` | Feature table containing the feature names associated with each genome. In FASTA mode, these are dbCAN families. In matrix mode, these are the input annotation column names that were present after binarization. |
-| `allsubs.tsv` | Feature-list table used by the RPS calculation. In FASTA mode, these are inferred substrates. In matrix mode, these are the annotation columns with values greater than zero. |
+| `allfams.tsv` | Feature table containing the present input features for each genome. In FASTA mode, these are dbCAN families. In matrix mode, these are the present protein-family or substrate columns. |
+| `allsubs.tsv` | Substrate-list table used by the RPS calculation. In FASTA mode, these are inferred substrates. In matrix `protein_families` mode, these are produced by mapping present families through the substrate key. In matrix `substrates` mode, these are the present substrate columns. |
 | `carboncomp_output.tsv.xz` | Compressed pairwise table containing overlap, competition, probability, RPS, and relative-RPS values. |
 
 ### Matrix-mode intermediate outputs
@@ -259,7 +278,7 @@ Example row:
 
 ## Interpretation of matrix-mode results
 
-Matrix mode performs a **binary set-overlap analysis**. It does not use annotation abundance, gene copy number, expression level, or other count magnitude after conversion. If abundance-weighted comparisons are required, the current implementation would need a separate quantitative similarity or overlap model.
+Matrix mode performs a **binary set-overlap analysis**. It does not use annotation abundance, gene copy number, expression level, or other count magnitude after conversion. In `protein_families` mode, RPS is calculated on the mapped substrate sets, not on the family names. If abundance-weighted comparisons are required, the current implementation would need a separate quantitative similarity or overlap model.
 
 The probability calculation uses the implemented fixed feature-universe assumption in `CaCo.py`. Users applying matrix mode to a feature universe substantially different from the default assumption should validate the probability interpretation for their dataset.
 
