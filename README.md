@@ -146,7 +146,7 @@ python3 CaCo.py \
   -cpus 8
 ```
 
-The `--matrix-id-column` option is optional. If omitted, CaCo uses the first column as the genome identifier. CSV and TSV delimiters are detected automatically. Matrix mode bypasses gene prediction and HMM search, but protein-family mode loads the substrate mapping from `data/substrate_key.json` unless a custom file is supplied with `-subs`.
+NOTE: The `--matrix-id-column` option is optional. If omitted, CaCo uses the first column as the genome identifier. CSV and TSV delimiters are detected automatically. Matrix mode bypasses gene prediction and HMM search, and protein-family mode loads the substrate mapping from `data/substrate_key.json` unless a custom file is supplied with `-subs`.
 
 ---
 
@@ -210,7 +210,7 @@ python3 CaCo.py \
 | `-cpus` | Number of CPU cores to use. Default: all available cores. The workflow dynamically balances HMM-search threads to avoid oversubscription. |
 | `--use-pyrodigal` | Use Pyrodigal for nucleotide FASTA gene prediction. If omitted, Prodigal is used. This option has no effect in matrix mode. |
 | `-db` | Path to a custom dbCAN HMM database. Default: `data/dbcan.hmm`. Used by FASTA modes. |
-| `-subs` | Path to a custom substrate-key JSON file. Default: `data/substrate_key.json`. Used by FASTA modes. |
+| `-subs` | Path to a custom substrate-key JSON file. Default: `data/substrate_key.json`. |
 
 ---
 
@@ -228,12 +228,11 @@ All final output files are written to the current working directory, meaning the
 
 For the example matrix above, `allsubs.tsv` will have the following structure:
 
-```text
-genome\tsubstrates
-G1\tacetate, xylose
-G2\tacetate, glucose
-G3\t
-```
+| genome | substrates |
+| :---: | :---: |
+| G1 | acetate, xylose |
+| G2 | acetate, glucose |
+| G3 | <empty> |
 
 An empty feature list is valid. A genome with no positive annotations has an empty set of resources and is still included in pairwise comparisons.
 
