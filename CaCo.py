@@ -221,15 +221,13 @@ def extract_features_one(parsed_file, subs_dict):
     return name, sorted_fam, sorted_subs
 
 
-def matrix_to_feature_tables(matrix_file, output_dir, id_column=None):
-    """Read a genome-by-annotation table and convert positive values to presence/absence.
+def matrix_to_feature_tables(matrix_file, output_dir, subs_dict, matrix_type,
+                               id_column=None):
+    """Convert a genome-by-feature matrix into CaCo feature and substrate tables.
 
-    The input may be tab-delimited or comma-separated. The first column is used as
-    the genome identifier by default; use id_column to select a named identifier
-    column. Every remaining column is treated as an annotation/substrate feature.
-    Values greater than zero are converted to 1, while zero, missing, and nonnumeric
-    values are converted to 0. The resulting substrate lists are compatible with
-    the existing pairwise RPS calculation.
+    matrix_type must be either ``protein_families`` or ``substrates``. Positive
+    numeric values are converted to presence. Protein-family columns are mapped to
+    substrates using the same substrate-key JSON used by the FASTA workflow.
     """
     if not os.path.isfile(matrix_file):
         raise FileNotFoundError(f"Matrix file not found: {matrix_file}")
@@ -253,17 +251,41 @@ def matrix_to_feature_tables(matrix_file, output_dir, id_column=None):
         duplicates = df.loc[df[id_column].duplicated(), id_column].astype(str).tolist()
         raise ValueError(f"Genome identifiers must be unique; duplicated values include: {duplicates[:5]}")
 
-    feature_columns = [c for c in df.columns if c != id_column]
-    numeric = df[feature_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
+    if matrix_type not in {'protein_families', 'substrates'}:
+        raise ValueError("matrix_type must be 'protein_families' or 'substrates'.")
+
+    feature_columns = [str(c).strip() for c in df.columns if c != id_column]
+    if any(not feature for feature in feature_columns):
+        raise ValueError("Annotation columns must have non-empty names.")
+    numeric = df[[c for c in df.columns if c != id_column]].apply(
+        pd.to_numeric, errors='coerce'
+    ).fillna(0)
     binary = (numeric > 0).astype('uint8')
+
+    # Map each input column to one or more substrate names. Protein-family
+    # identifiers are normalized to the family prefix used by substrate_key.json.
+    feature_to_substrates = {}
+    if matrix_type == 'protein_families':
+        for feature in feature_columns:
+            family = feature.split('.')[0]
+            mapped = subs_dict.get(family, '')
+            feature_to_substrates[feature] = {
+                substrate.strip() for substrate in mapped.split(',') if substrate.strip()
+            }
+    else:
+        for feature in feature_columns:
+            feature_to_substrates[feature] = {feature}
 
     records = []
     for genome, row in zip(df[id_column].astype(str), binary.itertuples(index=False, name=None)):
-        present = [feature for feature, value in zip(feature_columns, row) if value == 1]
+        present_features = [feature for feature, value in zip(feature_columns, row) if value == 1]
+        present_substrates = set()
+        for feature in present_features:
+            present_substrates.update(feature_to_substrates[feature])
         records.append({
             'genome': genome,
-            'families': ', '.join(present),
-            'substrates': ', '.join(present)
+            'families': ', '.join(sorted(present_features)),
+            'substrates': ', '.join(sorted(present_substrates))
         })
 
     fam_path = os.path.join(output_dir, 'allfams.tsv')
@@ -407,7 +429,7 @@ def compute_rps_parallel(df_sub, num_workers, output_file):
 
 # ---------- Main orchestration ----------
 def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers, use_pyrodigal,
-         matrix_file=None, matrix_id_column=None):
+         matrix_file=None, matrix_type=None, matrix_id_column=None):
     # Determine output directory: all final outputs go to current working directory
     output_dir = os.getcwd()
     os.makedirs(temp_dir, exist_ok=True)
@@ -415,7 +437,9 @@ def main(mode, genomes_list, temp_dir, output_file, db, subs_dict, num_workers, 
     # Matrix mode: annotations are treated as substrate features after binarization.
     if mode == 'from_matrix':
         print("Reading annotation matrix and converting positive values to binary presence...")
-        fam_path, sub_path = matrix_to_feature_tables(matrix_file, output_dir, matrix_id_column)
+        fam_path, sub_path = matrix_to_feature_tables(
+            matrix_file, output_dir, subs_dict, matrix_type, matrix_id_column
+        )
     # 1. Gene prediction (if nucleotides)
     elif mode == 'from_nucleotides':
         print("Gene prediction...")
@@ -466,7 +490,10 @@ if __name__ == '__main__':
     parser.add_argument("-g2", type=str, help="Genome file 2")
     parser.add_argument("-gl", type=str, default=None, help="File with list of genome paths")
     parser.add_argument("-matrix", type=str, default=None,
-                        help="Genome-by-annotation CSV/TSV table for from_matrix mode")
+                        help="Genome-by-feature CSV/TSV table for from_matrix mode")
+    parser.add_argument("--matrix-type", type=str, default=None,
+                        choices=['protein_families', 'substrates'],
+                        help="Matrix columns: protein_families (map through substrate key) or substrates")
     parser.add_argument("--matrix-id-column", type=str, default=None,
                         help="Column containing genome identifiers; defaults to the first column")
     parser.add_argument("-o", type=str, default='carboncomp_output.tsv.xz', help="Output file name (placed in current directory)")
@@ -484,6 +511,9 @@ if __name__ == '__main__':
         if not args.matrix:
             print("Error: -matrix is required when using -m from_matrix")
             sys.exit(1)
+        if not args.matrix_type:
+            print("Error: --matrix-type is required when using -m from_matrix")
+            sys.exit(1)
         genomes = []
     # Determine genome list for FASTA/protein modes
     elif args.gl:
@@ -496,18 +526,16 @@ if __name__ == '__main__':
             print("Error: Provide either -gl or both -g1 and -g2")
             sys.exit(1)
 
-    # Resolve database and substrate files. Matrix mode does not need either file.
-    if args.m == 'from_matrix':
-        db = None
-        subs_dict = {}
-    else:
-        db = args.db if args.db else get_data_path('data/dbcan.hmm')
-        subs = args.subs if args.subs else get_data_path('data/substrate_key.json')
-        with open(subs, 'r') as f:
-            subs_dict = json.load(f)
+    # Matrix protein-family mode needs the substrate key; FASTA modes need both files.
+    subs = args.subs if args.subs else get_data_path('data/substrate_key.json')
+    with open(subs, 'r') as f:
+        subs_dict = json.load(f)
+    db = None if args.m == 'from_matrix' else (
+        args.db if args.db else get_data_path('data/dbcan.hmm')
+    )
 
     if args.m == 'from_matrix':
-        print("Using matrix mode: all positive annotation values will be treated as present.")
+        print(f"Using matrix mode ({args.matrix_type}): all positive values will be treated as present.")
     elif args.use_pyrodigal:
         print("Using Pyrodigal for gene prediction (fast). Note: results may differ slightly from the original paper.")
     else:
@@ -522,4 +550,5 @@ if __name__ == '__main__':
          num_workers=args.cpus,
          use_pyrodigal=args.use_pyrodigal,
          matrix_file=args.matrix,
+         matrix_type=args.matrix_type,
          matrix_id_column=args.matrix_id_column)
