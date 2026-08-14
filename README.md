@@ -83,7 +83,9 @@ CaCo supports the following modes:
 
 ## Matrix input mode
 
-Matrix mode accepts a rectangular CSV or TSV table in which rows represent genomes and columns represent either **protein families** or **substrates**. The table must contain one genome identifier column and at least one feature column. A list-valued `substrates` column is not the input format for this mode.
+Matrix mode accepts a CSV or TSV table in which rows represent genomes and columns represent either **protein families** or **substrates**. The table must contain one genome identifier column and at least one feature column. A list-valued `substrates` column is not the input format for this mode.
+
+Matrix mode bypasses gene prediction and HMM search. Substrate matrices do not require the substrate mapping, while protein-family matrices use data/substrate_key.json or the file supplied with -subs.
 
 The input type must be declared explicitly with `--matrix-type`:
 
@@ -104,12 +106,11 @@ Counts are used only to determine presence. Their magnitude is not retained, so 
 
 ### Protein-family matrix example
 
-```text
-genome\tGH18\tGH73\tCE4\tAA1
-G1\t2\t0\t1\t0
-G2\t1\t3\t0\t1
-G3\t0\t0\t0\t0
-```
+| genome | GH18 | GH73 | CE4 | AA1 |
+| :--- | :--- | :--- | :--- | :--- |
+| G1 | 2 | 0 | 1 | 0 |
+| G2 | 1 | 3 | 0 | 1 |
+| G3 | 0 | 0 | 0 | 0 |
 
 In this example, `GH18` maps to host glycan, peptidoglycan, and chitin; `GH73` maps to peptidoglycan; `CE4` maps to xylan, peptidoglycan, and chitin; and `AA1` maps to lignin according to `data/substrate_key.json`. The resulting substrate sets are therefore derived from the mapping rather than from the protein-family names themselves.
 
@@ -127,12 +128,11 @@ python3 CaCo.py \
 
 ### Substrate matrix example
 
-```text
-genome\tchitin\tpeptidoglycan\tlignin
-G1\t2\t0\t1
-G2\t1\t3\t0
-G3\t0\t0\t0
-```
+| genome | chitin | peptidoglycan | lignin |
+| :--- | :--- | :--- | :--- |
+| G1 | 2 | 0 | 1 |
+| G2 | 1 | 3 | 0 |
+| G3 | 0 | 0 | 0 |
 
 Run it with:
 
