@@ -86,6 +86,39 @@ jobs:
         done
         echo "✅ All Prodigal validation checks passed!"
 
+    # ---------- MATRIX INPUT TEST ----------
+    - name: Test genome-by-annotation matrix mode
+      shell: bash -l {0}
+      run: |
+        echo "Testing genome-by-annotation matrix mode..."
+        rm -f allfams.tsv allsubs.tsv carboncomp_output.tsv.xz
+        python3 CaCo.py -m from_matrix \
+          -matrix tests/example/genome_annotations.tsv \
+          --matrix-id-column genome \
+          -o carboncomp_output.tsv.xz \
+          -cpus 2
+        mkdir -p test_outputs/matrix
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/matrix/
+
+    - name: Validate matrix-mode outputs
+      shell: bash -l {0}
+      run: |
+        echo "Validating matrix-mode binary conversion and RPS output..."
+        cd test_outputs/matrix
+
+        printf 'genome\tsubstrates\nG1\tacetate, xylose\nG2\tacetate, glucose\nG3\t\n' > expected_allsubs.tsv
+        diff -u --strip-trailing-cr expected_allsubs.tsv allsubs.tsv
+
+        # Count values 2, 1, and 3 must be treated as presence; zero must be absence.
+        grep -F $'G1\tacetate, xylose' allsubs.tsv
+        grep -F $'G2\tacetate, glucose' allsubs.tsv
+        grep -Eq '^G3[[:space:]]*$' allsubs.tsv
+
+        # Three genomes produce exactly three unique pairwise rows plus the header.
+        test "$(xz -dc carboncomp_output.tsv.xz | wc -l)" -eq 4
+        test "$(xz -dc carboncomp_output.tsv.xz | tail -n +2 | cut -f1-2 | sort -u | wc -l)" -eq 3
+        echo "✅ Matrix-mode validation checks passed."
+
     # ---------- PYRODIGAL TEST ----------
     - name: Test Pyrodigal mode
       shell: bash -l {0}
