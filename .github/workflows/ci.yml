@@ -86,35 +86,58 @@ jobs:
         done
         echo "✅ All Prodigal validation checks passed!"
 
-    # ---------- MATRIX INPUT TEST ----------
-    - name: Test genome-by-annotation matrix mode
+    # ---------- MATRIX INPUT TESTS ----------
+    - name: Test protein-family matrix mode
       shell: bash -l {0}
       run: |
-        echo "Testing genome-by-annotation matrix mode..."
+        echo "Testing protein-family matrix mode..."
         rm -f allfams.tsv allsubs.tsv carboncomp_output.tsv.xz
         python3 CaCo.py -m from_matrix \
-          -matrix tests/example/genome_annotations.tsv \
+          -matrix tests/example/protein_family_matrix.tsv \
+          --matrix-type protein_families \
           --matrix-id-column genome \
           -o carboncomp_output.tsv.xz \
           -cpus 2
-        mkdir -p test_outputs/matrix
-        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/matrix/
+        mkdir -p test_outputs/matrix_protein_families
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/matrix_protein_families/
 
-    - name: Validate matrix-mode outputs
+    - name: Validate protein-family matrix mapping and RPS output
       shell: bash -l {0}
       run: |
-        echo "Validating matrix-mode binary conversion and RPS output..."
-        cd test_outputs/matrix
-
-        printf 'genome\tsubstrates\nG1\tacetate, xylose\nG2\tacetate, glucose\nG3\t\n' > expected_allsubs.tsv
+        echo "Validating protein-family conversion, substrate mapping, and RPS output..."
+        cd test_outputs/matrix_protein_families
+        printf 'genome\tsubstrates\nG1\tchitin, host glycan, peptidoglycan, xylan\nG2\tchitin, host glycan, lignin, peptidoglycan\nG3\t\n' > expected_allsubs.tsv
         diff -u --strip-trailing-cr expected_allsubs.tsv allsubs.tsv
-
-        # Count values 2, 1, and 3 must be treated as presence; zero must be absence.
-        grep -F $'G1\tacetate, xylose' allsubs.tsv
-        grep -F $'G2\tacetate, glucose' allsubs.tsv
+        grep -F $'G1\tchitin, host glycan, peptidoglycan, xylan' allsubs.tsv
+        grep -F $'G2\tchitin, host glycan, lignin, peptidoglycan' allsubs.tsv
         grep -Eq '^G3[[:space:]]*$' allsubs.tsv
+        test "$(xz -dc carboncomp_output.tsv.xz | wc -l)" -eq 4
+        test "$(xz -dc carboncomp_output.tsv.xz | tail -n +2 | cut -f1-2 | sort -u | wc -l)" -eq 3
 
-        # Three genomes produce exactly three unique pairwise rows plus the header.
+    - name: Test substrate matrix mode
+      shell: bash -l {0}
+      run: |
+        echo "Testing substrate matrix mode..."
+        rm -f allfams.tsv allsubs.tsv carboncomp_output.tsv.xz
+        python3 CaCo.py -m from_matrix \
+          -matrix tests/example/substrate_matrix.tsv \
+          --matrix-type substrates \
+          --matrix-id-column genome \
+          -o carboncomp_output.tsv.xz \
+          -cpus 2
+        mkdir -p test_outputs/matrix_substrates
+        mv allfams.tsv allsubs.tsv carboncomp_output.tsv.xz test_outputs/matrix_substrates/
+
+    - name: Validate substrate matrix binary conversion and RPS output
+      shell: bash -l {0}
+      run: |
+        echo "Validating substrate matrix binary conversion and RPS output..."
+        cd test_outputs/matrix_substrates
+        printf 'genome\tsubstrates\nG1\tchitin, lignin\nG2\tchitin, peptidoglycan\nG3\t\n' > expected_allsubs.tsv
+        diff -u --strip-trailing-cr expected_allsubs.tsv allsubs.tsv
+        grep -F $'G1\tchitin, lignin' allsubs.tsv
+        grep -F $'G2\tchitin, peptidoglycan' allsubs.tsv
+        grep -Eq '^G3[[:space:]]*$' allsubs.tsv
         test "$(xz -dc carboncomp_output.tsv.xz | wc -l)" -eq 4
         test "$(xz -dc carboncomp_output.tsv.xz | tail -n +2 | cut -f1-2 | sort -u | wc -l)" -eq 3
         echo "✅ Matrix-mode validation checks passed."
