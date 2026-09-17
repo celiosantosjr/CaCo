@@ -75,20 +75,75 @@ def predict_genes_prodigal(infile, outdir):
     return outfile
 
 def predict_genes_pyrodigal(infile, outdir):
-    """Fast Python binding – may produce slightly different calls."""
+    """
+    Fast Python gene prediction with pyrodigal for multi-contig MAGs.
+
+    Uses metagenomic mode (meta=True), which trains per contig and requires
+    no explicit call to train(). Parses FASTA correctly, processes each contig
+    independently, and strips the terminal stop codon to match Prodigal's -a
+    output.
+    """
     if pyrodigal is None:
-        raise RuntimeError("Pyrodigal is required for --use-pyrodigal. Install it or omit that option.")
-    outfile = os.path.join(outdir, os.path.basename(infile).rsplit('.', 1)[0] + '.faa')
+        raise RuntimeError(
+            "Pyrodigal is required for --use-pyrodigal. "
+            "Install it or omit that option."
+        )
+
+    outfile = os.path.join(
+        outdir, os.path.basename(infile).rsplit('.', 1)[0] + '.faa'
+    )
     if os.path.exists(outfile):
         return outfile
-    with open(infile, 'rb') as f:
-        seq = f.read()
-    genes = pyrodigal.GeneFinder(meta=False)
-    genes.train(seq)
-    with open(outfile, 'w') as out:
-        for idx, pred in enumerate(genes.find_genes(seq), 1):
-            prot = pred.translate()
-            out.write(f">{os.path.basename(infile)}_gene_{idx}\n{prot}\n")
+
+    # meta=True: train per contig, no explicit train() call needed
+    finder = pyrodigal.GeneFinder(meta=True)
+
+    base_id = os.path.basename(infile).rsplit('.', 1)[0]
+    n_proteins = 0
+
+    with open(infile, 'rt') as fh_in, open(outfile, 'w') as fh_out:
+        contig_id = None
+        chunks = []
+
+        def flush_contig(contig_id, sequence):
+            nonlocal n_proteins
+            if not sequence:
+                return
+            try:
+                genes = finder.find_genes(sequence)
+            except Exception as exc:
+                # Skip malformed contigs rather than aborting the whole genome
+                print(f"  ! pyrodigal failed on {contig_id}: {exc}", file=sys.stderr)
+                return
+            for idx, gene in enumerate(genes, 1):
+                protein = str(gene.translate()).rstrip('*')
+                if not protein:
+                    continue
+                n_proteins += 1
+                fh_out.write(f">{base_id}|{contig_id}|{idx}\n{protein}\n")
+
+        for raw in fh_in:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith('>'):
+                if contig_id is not None:
+                    flush_contig(contig_id, ''.join(chunks))
+                contig_id = line[1:].split()[0]
+                chunks = []
+            else:
+                if contig_id is None:
+                    raise ValueError(
+                        f"FASTA sequence precedes header in {infile}"
+                    )
+                chunks.append(''.join(line.split()))
+
+        if contig_id is not None:
+            flush_contig(contig_id, ''.join(chunks))
+
+    if n_proteins == 0:
+        raise RuntimeError(f"No proteins predicted from {infile}")
+
     return outfile
 
 
